@@ -1,229 +1,303 @@
+'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 const ENTITES = ['PRESTA','SUPPORT + SAI','PROD / PLANIFIÉ PROD','AUTRE / IGNORÉ'];
-let mappingSel = {};
-
 const $ = s => document.querySelector(s);
-const $$ = s => document.querySelectorAll(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-function msg(el, text, cls){ el.innerHTML = text ? `<div class="msg ${cls}">${text}</div>` : ''; }
-async function api(url, opts = {}){
-  const r = await fetch(url, opts);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || 'HTTP ' + r.status);
-  return data;
+/* ---------- Helpers ---------- */
+function toast(text, type='ok'){
+  const t = document.createElement('div'); t.className = 'toast ' + type; t.innerHTML = text;
+  $('#toasts').appendChild(t);
+  setTimeout(()=>{ t.classList.add('out'); setTimeout(()=>t.remove(), 350); }, 4500);
 }
-function tableHTML(rows, recap = false){
-  if (!rows || !rows.length) return '<p style="color:#889;font-size:13px">Aucune donnée.</p>';
-  const cols = Object.keys(rows[0]);
-  let h = '<div style="overflow:auto;max-height:620px"><table class="data"><thead><tr>' +
-          cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
-  for (const r of rows){
-    let cls = '';
-    if (recap){
-      const c = String(r['Choix'] ?? '');
-      if (c === 'TOTAL') cls = 'total';
-      else if (c === 'SANS CHOIX') cls = 'sanschoix';
-      else if (c.startsWith('dont ')) cls = 'dont';
-    }
-    h += `<tr class="${cls}">` + cols.map(c => {
-      let v = r[c];
-      if (c === 'Pourcentage' && v !== null && v !== undefined && v !== '')
-        v = Number(v).toFixed(1).replace('.', ',') + ' %';
-      return `<td>${esc(v)}</td>`;
-    }).join('') + '</tr>';
-  }
-  return h + '</tbody></table></div>';
+async function api(url, opts={}){
+  const r = await fetch(url, opts); let d = {};
+  try { d = await r.json(); } catch(e){}
+  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+function debounce(fn, ms=280){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
+function busy(btn, on, label){
+  if (!btn) return;
+  if (on){ btn.dataset.lbl = btn.innerHTML; btn.disabled = true; btn.innerHTML = '⏳ ' + (label||'Traitement…'); }
+  else { btn.disabled = false; btn.innerHTML = btn.dataset.lbl; }
 }
 function fillSelect(sel, values){
   const cur = sel.value;
   sel.innerHTML = '<option value="">Tous</option>' +
-    values.map(v => `<option${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('');
+    (values||[]).map(v => `<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
 }
-function searchFilter(rows, text){
-  if (!text) return rows;
-  const s = text.toLowerCase();
-  return (rows || []).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
+function totalRowClass(r){
+  return Object.values(r).some(v => ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique']
+    .includes(String(v ?? '')));
+}
+function tableHTML(rows, o={}){
+  if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
+  const cols = Object.keys(rows[0]);
+  let h = '<div class="tscroll"><table class="data"><thead><tr>' +
+          cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+  rows.forEach(r => {
+    let cls = '';
+    const c0 = String(r[cols[0]] ?? '');
+    if (o.recap){ if (c0==='TOTAL') cls='total'; else if (c0==='SANS CHOIX') cls='sanschoix'; else if (c0.startsWith('dont ')) cls='dont'; }
+    else if (totalRowClass(r)) cls = 'total';
+    h += `<tr class="${cls}">` + cols.map(c => {
+      let v = r[c];
+      if (c === 'Pourcentage' && v !== null && v !== undefined && v !== '') v = Number(v).toFixed(1).replace('.', ',') + ' %';
+      return `<td>${esc(v)}</td>`;
+    }).join('') + '</tr>';
+  });
+  return h + '</tbody></table></div>';
 }
 
 /* ---------- Sidebar ---------- */
  $('#inp-taux').addEventListener('input', e => $('#taux-val').textContent = e.target.value + '%');
 
  $('#btn-import').addEventListener('click', async () => {
+  if (!$('#inp-planning').files.length) return toast('Importez au moins un fichier Planning.', 'err');
   const fd = new FormData();
   for (const f of $('#inp-planning').files) fd.append('planning', f);
   if ($('#inp-commande').files[0]) fd.append('commande', $('#inp-commande').files[0]);
   if ($('#inp-reference').files[0]) fd.append('reference', $('#inp-reference').files[0]);
   const w = $('#inp-week').value.trim(); if (w) fd.append('week', w);
-  msg($('#sidebar-msg'), '⏳ Traitement en cours...', '');
+  busy($('#btn-import'), true, 'Import…');
   try {
-    const res = await api('/api/import', {method: 'POST', body: fd});
-    let t = `✅ Semaine ${res.week} : ${res.n_planifiees} planifiés, ${res.n_commandes} commandes.`;
-    if (res.warnings.length) t += ' ⚠️ ' + res.warnings.join(' ; ');
-    msg($('#sidebar-msg'), t, 'ok');
-    await refreshState();
-    loadPage1();
-  } catch (e){ msg($('#sidebar-msg'), '❌ ' + e.message, 'err'); }
+    const res = await api('/api/import', {method:'POST', body: fd});
+    let t = `✅ Semaine <b>${esc(res.week)}</b> : ${res.n_planifiees} planifiés, ${res.n_commandes} commandes.`;
+    if (res.warnings.length) t += '<br>⚠️ ' + res.warnings.map(esc).join('<br>⚠️ ');
+    $('#imp-summary').innerHTML = `<div class="msg ok">${t}</div>`;
+    toast('Import réussi : semaine ' + esc(res.week));
+    await refreshState(); await loadP1();
+  } catch(e){
+    $('#imp-summary').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`;
+    toast(esc(e.message), 'err');
+  }
+  busy($('#btn-import'), false);
 });
 
  $('#sel-week').addEventListener('change', async e => {
-  await api('/api/select_week', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                 body: JSON.stringify({week: e.target.value})});
-  loadPage1();
+  await api('/api/select_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: e.target.value})});
+  await loadP1();
+  toast('Semaine ' + esc(e.target.value) + ' affichée');
 });
  $('#btn-del-week').addEventListener('click', async () => {
-  if (!confirm('Supprimer cette semaine ?')) return;
-  await api('/api/delete_week', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                 body: JSON.stringify({week: $('#sel-week').value})});
-  await refreshState(); loadPage1();
+  if (!confirm('Supprimer définitivement cette semaine ?')) return;
+  await api('/api/delete_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: $('#sel-week').value})});
+  await refreshState(); await loadP1();
+  toast('Semaine supprimée');
 });
 
 async function refreshState(){
   const s = await api('/api/state');
-  $('#sel-week').innerHTML = s.weeks.map(w => `<option${w === s.current_week ? ' selected' : ''}>${esc(w)}</option>`).join('')
-    || '<option value="">—</option>';
+  $('#sel-week').innerHTML = s.weeks.map(w => `<option${w===s.current_week?' selected':''}>${esc(w)}</option>`).join('') || '<option value="">—</option>';
   $('#sel-week').disabled = !s.weeks.length;
+  $('#week-badge').textContent = s.current_week ? 'Semaine ' + s.current_week : 'Aucune semaine';
 }
 
 /* ---------- Onglets ---------- */
- $$('.tab').forEach(b => b.addEventListener('click', () => {
+ $$('.tab').forEach(b => b.addEventListener('click', async () => {
   $$('.tab').forEach(x => x.classList.remove('active'));
   $$('.panel').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); $('#' + b.dataset.tab).classList.add('active');
-  if (b.dataset.tab === 'p1') loadPage1();
-  if (b.dataset.tab === 'p6') loadPrefixes();
+  if (b.dataset.tab === 'p1') await loadP1();
+  if (b.dataset.tab === 'p6') await loadPrefixes();
 }));
 
-/* ---------- Page 1 ---------- */
-let page1 = null;
-async function loadPage1(){
-  try {
-    page1 = await api('/api/page1');
-    fillSelect($('#f1-transport'), page1.options.TRANSPORT || []);
-    fillSelect($('#f1-projet'), page1.options.Projet || []);
-    fillSelect($('#f1-statut'), page1.options.Statut || []);
-    renderP1();
-  } catch (e){ $('#out-p1').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
-}
-function renderP1(){
-  if (!page1) return;
-  let rows = page1.rows;
-  const f = {TRANSPORT: $('#f1-transport').value, Projet: $('#f1-projet').value, Statut: $('#f1-statut').value};
-  for (const [c, v] of Object.entries(f)) if (v) rows = rows.filter(r => String(r[c]) === v);
-  $('#out-p1').innerHTML = tableHTML(searchFilter(rows, $('#f1-search').value));
-}
-['f1-transport','f1-projet','f1-statut','f1-search'].forEach(id =>
-  $('#' + id).addEventListener('input', renderP1));
- $('#btn-exp-p1').addEventListener('click', () => window.open('/api/export_page1', '_blank'));
+/* ---------- PAGE 1 : Planning regroupé ---------- */
+let p1Cache = null;
 
-/* ---------- Page 2 ---------- */
- $('#p2-presta').innerHTML = JOURS.map(j =>
-  `<label>${j}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
+function planTable(rows){
+  if (!rows || !rows.length) return '<div class="empty">Aucune ligne ne correspond aux filtres.</div>';
+  const base = ['TRANSPORT','WORKDAY ID','Paid ID','Nom','Projet','Statut'];
+  const lab = {DE:'Début', A:'Fin', Pause:'Pause', Flag:'✓'};
+  let h = '<div class="tscroll"><table class="data plan"><thead>';
+  h += '<tr class="grp-row"><th colspan="6">👤 Identité &amp; affectation</th>';
+  JOURS.forEach(j => h += `<th colspan="4">${j}</th>`);
+  h += '</tr><tr class="cols-row">';
+  base.forEach(c => h += `<th>${c==='TRANSPORT'?'Transport':c}</th>`);
+  JOURS.forEach(j => ['DE','A','Pause','Flag'].forEach(s => h += `<th>${lab[s]}</th>`));
+  h += '</tr></thead><tbody>';
+  rows.forEach(r => {
+    h += '<tr>';
+    base.forEach(c => h += `<td>${esc(r[c])}</td>`);
+    JOURS.forEach(j => {
+      const de = String(r[j+'_DE'] ?? '');
+      const on = de && de !== '00:00' ? ' class="on"' : '';
+      h += `<td${on}>${esc(de)||'—'}</td><td${on}>${esc(r[j+'_A'])||'—'}</td><td${on}>${esc(r[j+'_Pause'])||'—'}</td>`;
+      h += `<td class="flag${Number(r[j+'_Flag'])?' on':''}">${Number(r[j+'_Flag'])?'✓':''}</td>`;
+    });
+    h += '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+
+async function loadP1(){
+  const p = new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value,
+                                 statut:$('#f1-statut').value, q:$('#f1-search').value});
+  try {
+    const d = await api('/api/page1?' + p);
+    p1Cache = d;
+    fillSelect($('#f1-transport'), d.options.TRANSPORT || []);
+    fillSelect($('#f1-projet'), d.options.Projet || []);
+    fillSelect($('#f1-statut'), d.options.Statut || []);
+    fillSelect($('#f2-projet'), d.options.Projet || []);
+    fillSelect($('#f2-statut'), d.options.Statut || []);
+    fillSelect($('#f3-transport'), d.options.TRANSPORT || []);
+    fillSelect($('#f3-projet'), d.options.Projet || []);
+    fillSelect($('#f3-statut'), d.options.Statut || []);
+    fillSelect($('#f4-projet'), d.options.Projet || []);
+    fillSelect($('#f4-statut'), d.options.Statut || []);
+    $('#cnt-p1').textContent = d.total ? `${d.shown} ligne(s) affichée(s) sur ${d.total}` : '';
+    $('#out-p1').innerHTML = planTable(d.rows);
+  } catch(e){ $('#out-p1').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+}
+['f1-transport','f1-projet','f1-statut'].forEach(id => $('#'+id).addEventListener('change', loadP1));
+ $('#f1-search').addEventListener('input', debounce(loadP1, 300));
+ $('#btn-exp-p1').addEventListener('click', () =>
+  window.open('/api/export_page1?' + new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value, statut:$('#f1-statut').value, q:$('#f1-search').value}), '_blank'));
+
+/* ---------- PAGE 2 ---------- */
+ $('#p2-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
  $('#btn-p2').addEventListener('click', async () => {
-  const p = new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value});
-  JOURS.forEach(j => p.set('prest_' + j, $('#prest-' + j).value));
-  const d = await api('/api/page2?' + p);
-  $('#out-p2').innerHTML = tableHTML(d.rows);
-  $('#p2-metrics').innerHTML = JOURS.map(j =>
-    `<div class="metric"><div class="lbl">${j}</div><div class="val">${d.metrics[j]} pax</div></div>`).join('');
-});
-api('/api/state').then(s => { /* filtres remplis via page1 */ });
-
-/* ---------- Page 3 ---------- */
- $('#btn-p3').addEventListener('click', async () => {
-  const p = new URLSearchParams({transport: $('#f3-transport').value, projet: $('#f3-projet').value, statut: $('#f3-statut').value});
-  const d = await api('/api/page3?' + p);
-  $('#out-p3').innerHTML = '<h3>Nombre de personnes par Heure de Début</h3>' + tableHTML(d.pivot.rows) +
-    `<details><summary>👁️ Liste détaillée par shift</summary>${tableHTML(d.detail.rows)}</details>`;
-});
-/* remplissage des selects transport/projet/statut des pages 3 et 4 depuis page1 */
-async function syncFilterOptions(){
-  if (!page1) await loadPage1();
-  fillSelect($('#f3-transport'), page1.options.TRANSPORT || []);
-  fillSelect($('#f3-projet'), page1.options.Projet || []);
-  fillSelect($('#f3-statut'), page1.options.Statut || []);
-  fillSelect($('#f4-projet'), page1.options.Projet || []);
-  fillSelect($('#f4-statut'), page1.options.Statut || []);
-  fillSelect($('#f2-projet'), page1.options.Projet || []);
-  fillSelect($('#f2-statut'), page1.options.Statut || []);
-}
-
-/* ---------- Page 4 ---------- */
- $('#btn-p4').addEventListener('click', async () => {
-  const p = new URLSearchParams({projet: $('#f4-projet').value, statut: $('#f4-statut').value});
-  const d = await api('/api/page4?' + p);
-  $('#out-p4').innerHTML = '<h3>📊 Pic de présence par projet</h3>' + tableHTML(d.peaks.rows) +
-    `<details><summary>🕒 Détail par créneau horaire</summary>${tableHTML(d.slots.rows)}</details>`;
-});
-
-/* ---------- Page 5 ---------- */
- $('#btn-p5').addEventListener('click', async () => {
-  $('#out-p5').innerHTML = '<div class="msg">⏳ Génération...</div>';
+  busy($('#btn-p2'), true, 'Calcul…');
   try {
-    const d = await api('/api/page5', {method: 'POST'});
-    $('#out-p5').innerHTML = tableHTML(searchFilter(d.rows, $('#f5-search').value));
-  } catch (e){ $('#out-p5').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+    const p = new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value});
+    JOURS.forEach(j => p.set('prest_' + j, $('#prest-' + j).value));
+    const d = await api('/api/page2?' + p);
+    $('#out-p2').innerHTML = tableHTML(d.rows);
+    $('#p2-metrics').innerHTML = JOURS.map(j =>
+      `<div class="metric"><div class="lbl">${j}</div><div class="val">${d.metrics[j]} <small>pax</small></div></div>`).join('');
+  } catch(e){ toast(esc(e.message), 'err'); }
+  busy($('#btn-p2'), false);
 });
- $('#f5-search').addEventListener('input', async () => { renderP5Again(); });
-let p5rows = null;
-const _origP5 = $('#btn-p5').onclick;
- $('#btn-p5').addEventListener('click', async () => {
-  try { p5rows = (await api('/api/page5', {method: 'POST'})).rows; } catch (e){}
-});
-function renderP5Again(){
-  // re-render local si rows déjà chargées
-}
-// Simplification : garder référence des rows
-let p5Data = null;
- $('#btn-p5').addEventListener('click', async () => {
-  try { const d = await api('/api/page5', {method: 'POST'}); p5Data = d.rows;
-        $('#out-p5').innerHTML = tableHTML(searchFilter(p5Data, $('#f5-search').value)); } catch (e){}
-});
- $('#f5-search').addEventListener('input', () => {
-  if (p5Data) $('#out-p5').innerHTML = tableHTML(searchFilter(p5Data, $('#f5-search').value));
-});
+ $('#btn-exp-p2').addEventListener('click', () =>
+  window.open('/api/export_page2?' + new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value}), '_blank'));
 
-/* ---------- Page 6 (Recap) ---------- */
+/* ---------- PAGE 3 ---------- */
+ $('#btn-p3').addEventListener('click', async () => {
+  busy($('#btn-p3'), true, 'Calcul…');
+  try {
+    const p = new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value});
+    const d = await api('/api/page3?' + p);
+    $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' + tableHTML(d.pivot.rows) +
+      `<details class="mt"><summary>👁️ Liste détaillée des personnes par shift</summary>${tableHTML(d.detail.rows)}</details>`;
+  } catch(e){ toast(esc(e.message), 'err'); }
+  busy($('#btn-p3'), false);
+});
+ $('#btn-exp-p3').addEventListener('click', () =>
+  window.open('/api/export_page3?' + new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value}), '_blank'));
+
+/* ---------- PAGE 4 ---------- */
+ $('#btn-p4').addEventListener('click', async () => {
+  busy($('#btn-p4'), true, 'Calcul…');
+  try {
+    const p = new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value});
+    const d = await api('/api/page4?' + p);
+    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet (overlap de shifts)</h3>' + tableHTML(d.peaks.rows) +
+      `<details class="mt"><summary>🕒 Détail complet par créneau horaire</summary>${tableHTML(d.slots.rows)}</details>`;
+  } catch(e){ toast(esc(e.message), 'err'); }
+  busy($('#btn-p4'), false);
+});
+ $('#btn-exp-p4').addEventListener('click', () =>
+  window.open('/api/export_page4?' + new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value}), '_blank'));
+
+/* ---------- PAGE 5 : Confrontation ---------- */
+let p5Rows = null;
+function confTable(rows){
+  if (!rows || !rows.length) return '<div class="empty">Aucune donnée.</div>';
+  const base = ['Workday ID','Paid ID','Nom','Projet','Statut'];
+  let h = '<div class="tscroll"><table class="data conf"><thead>';
+  h += '<tr class="grp-row"><th colspan="5">👤 Identité</th>';
+  JOURS.forEach(j => h += `<th colspan="2">${j}</th>`);
+  h += '</tr><tr class="cols-row">';
+  base.forEach(c => h += `<th>${esc(c)}</th>`);
+  JOURS.forEach(() => h += '<th>Planning</th><th>Commande</th>');
+  h += '</tr></thead><tbody>';
+  rows.forEach(r => {
+    h += '<tr>' + base.map(c => `<td>${esc(r[c])}</td>`).join('');
+    JOURS.forEach(j => {
+      const pl = String(r[j + ' - Planning'] ?? '');
+      const cm = String(r[j + ' - Commande'] ?? '');
+      const plCell = pl === 'Planifié' ? '<span class="badge b-ok">Planifié</span>'
+        : pl === 'hors planning' ? '<span class="badge b-warn">hors planning</span>'
+        : pl ? `<span class="badge b-info">${esc(pl)}</span>` : '';
+      const cmCell = cm ? (/JE NE SERAI PAS/i.test(cm) ? '<span class="badge b-abs">Je ne serai pas présent</span>' : esc(cm)) : '';
+      h += `<td>${plCell}</td><td>${cmCell}</td>`;
+    });
+    h += '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+function renderP5(){ if (p5Rows) $('#out-p5').innerHTML = confTable(searchRows(p5Rows, $('#f5-search').value)); }
+function searchRows(rows, text){
+  if (!text) return rows;
+  const s = text.toLowerCase();
+  return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
+}
+ $('#btn-p5').addEventListener('click', async () => {
+  busy($('#btn-p5'), true, 'Génération…');
+  try {
+    p5Rows = (await api('/api/page5', {method:'POST'})).rows;
+    renderP5();
+    toast('Confrontation générée : ' + p5Rows.length + ' lignes');
+  } catch(e){ toast(esc(e.message), 'err'); $('#out-p5').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+  busy($('#btn-p5'), false);
+});
+ $('#f5-search').addEventListener('input', debounce(renderP5, 250));
+ $('#btn-exp-p5').addEventListener('click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx'); } catch(e){ toast(esc(e.message),'err'); } });
+
+/* ---------- PAGE 6 : Recap ---------- */
+let mappingSel = {};
 async function loadPrefixes(){
   try {
     const d = await api('/api/prefixes');
-    let h = '<table class="data"><thead><tr><th>Préfixe</th><th>Entité</th></tr></thead><tbody>';
-    for (const p of d.prefixes){
-      mappingSel[p.prefix] = p.current;
-      h += `<tr><td>« ${esc(p.prefix)}… »</td><td><select data-prefix="${esc(p.prefix)}">` +
-        d.entities.map(e => `<option${e === p.current ? ' selected' : ''}>${esc(e)}</option>`).join('') +
-        '</select></td></tr>';
+    if (!d.prefixes.length){
+      $('#out-mapping').innerHTML = '<div class="empty">Importez Planning et/ou Commandes pour générer la correspondance.</div>';
+      return;
     }
-    $('#out-mapping').innerHTML = h + '</tbody></table>';
-    $$('#out-mapping select').forEach(s => s.addEventListener('change', e => {
-      mappingSel[e.target.dataset.prefix] = e.target.value;
-    }));
-  } catch (e){ $('#out-mapping').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+    let h = '<div class="map-grid">';
+    d.prefixes.forEach(p => {
+      mappingSel[p.prefix] = p.current;
+      h += `<div class="map-item"><span class="mono">« ${esc(p.prefix)}… »</span>
+        <select data-prefix="${esc(p.prefix)}">` +
+        d.entities.map(e => `<option${e===p.current?' selected':''}>${esc(e)}</option>`).join('') + '</select></div>';
+    });
+    $('#out-mapping').innerHTML = h + '</div>';
+    $$('#out-mapping select').forEach(s => s.addEventListener('change', e => mappingSel[e.target.dataset.prefix] = e.target.value));
+  } catch(e){ $('#out-mapping').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
 }
- $('#p6-taux').innerHTML = ENTITES.slice(0, 3).map(e =>
+ $('#map-search').addEventListener('input', debounce(() => {
+  const s = $('#map-search').value.toLowerCase();
+  $$('#out-mapping .map-item').forEach(it => it.style.display = it.textContent.toLowerCase().includes(s) ? '' : 'none');
+}, 200));
+
+ $('#p6-taux').innerHTML = ENTITES.slice(0,3).map(e =>
   `<label>${esc(e)} (%)<input type="number" id="taux-${esc(e)}" min="0" max="50" step="0.5" value="${$('#inp-taux').value}"></label>`).join('');
- $('#p6-presta').innerHTML = JOURS.map(j =>
-  `<label>${j}<input type="number" id="p6prest-${j}" min="0" value="0"></label>`).join('');
+ $('#p6-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="p6prest-${j}" min="0" value="0"></label>`).join('');
 
 function recapBody(){
   return {
     mapping: mappingSel,
-    taux: Object.fromEntries(ENTITES.slice(0, 3).map(e => [e, parseFloat($('#taux-' + e).value || 0)])),
+    taux: Object.fromEntries(ENTITES.slice(0,3).map(e => [e, parseFloat($('#taux-' + e).value || 0)])),
     presta_prevus: Object.fromEntries(JOURS.map(j => [j, parseInt($('#p6prest-' + j).value || 0)]))
   };
 }
 function renderRecap(d){
-  let h = '<h3>📈 Synthèse de la semaine</h3>' + tableHTML(d.summary_rows, true);
+  let h = '<h3 class="sub">📈 Synthèse de la semaine (repas à préparer)</h3>' + tableHTML(d.summary_rows, {recap:true});
   for (const day of d.day_order){
     const D = d.days[day];
     h += `<div class="day-card">
-      <div class="day-header"><span>📅 ${esc(day)}${D.date ? ' ' + esc(D.date) : ''}</span><span style="font-weight:400;font-size:12px;opacity:.85">Semaine ${esc(d.week)}</span></div>
-      <div class="day-sub">À commander : <b>${D.a_commander}</b> repas (dont ${D.presta} prestataire(s) prévu(s))<br>
-      À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix === 'TOTAL')?.['A preparer'] ?? 0}</b>`).join(' • ')}</div>`;
+      <div class="day-header"><span>📅 ${esc(day)}${D.date ? ' · ' + esc(D.date) : ''}</span>
+      <span class="dh-right">Semaine ${esc(d.week)}</span></div>
+      <div class="day-sub"><span class="big">À commander : <b>${D.a_commander}</b> repas</span>
+      <small>(dont ${D.presta} prestataire(s) prévu(s))</small><br>
+      À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix==='TOTAL')?.['A preparer'] ?? 0}</b>`).join(' &nbsp;•&nbsp; ')}</div>`;
     for (const E of D.entities){
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
-        <div class="entity-body"><div class="entity-meta">Planifiés : ${E.planned_n} · Réponses : ${E.reponses} · Absences déclarées : ${E.abs_n} · SANS CHOIX : ${E.sans_choix}</div>
-        ${tableHTML(E.rows, true)}</div></div>`;
+        <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> · Réponses : <b>${E.reponses}</b> ·
+        Absences déclarées : <b>${E.abs_n}</b> · SANS CHOIX : <b>${E.sans_choix}</b></div>
+        ${tableHTML(E.rows, {recap:true})}</div></div>`;
     }
     if (D.warn) h += `<div class="warn">⚠️ ${esc(D.warn)}</div>`;
     h += '</div>';
@@ -232,32 +306,59 @@ function renderRecap(d){
   $('#out-p6').innerHTML = h;
 }
  $('#btn-p6').addEventListener('click', async () => {
-  $('#out-p6').innerHTML = '<div class="msg">⏳ Calcul en cours...</div>';
-  try { renderRecap(await api('/api/recap', {method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(recapBody())})); }
-  catch (e){ $('#out-p6').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
-});
- $('#btn-exp-p6').addEventListener('click', async () => {
+  busy($('#btn-p6'), true, 'Calcul…');
+  $('#out-p6').innerHTML = '<div class="hint">⏳ Calcul du récapitulatif en cours…</div>';
   try {
-    const r = await fetch('/api/export_recap', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                                body: JSON.stringify(recapBody())});
-    if (!r.ok) throw new Error('Export impossible');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(await r.blob()); a.download = 'recap_commandes_menus.xlsx'; a.click();
-  } catch (e){ alert(e.message); }
+    renderRecap(await api('/api/recap', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(recapBody())}));
+    toast('Récapitulatif calculé');
+  } catch(e){ $('#out-p6').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; toast(esc(e.message), 'err'); }
+  busy($('#btn-p6'), false);
+});
+async function downloadPost(url, filename, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (!r.ok){ const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Export impossible'); }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await r.blob()); a.download = filename; a.click();
+}
+ $('#btn-exp-p6').addEventListener('click', async () => {
+  try { await downloadPost('/api/export_recap', 'recap_commandes_menus.xlsx', recapBody()); }
+  catch(e){ toast(esc(e.message), 'err'); }
 });
 
-/* ---------- Page 7 ---------- */
-let p7Data = null;
+/* ---------- PAGE 7 ---------- */
+let p7Rows = null;
+function renderP7(){
+  if (p7Rows === null) return;
+  const rows = searchRows(p7Rows, $('#f7-search').value);
+  $('#out-p7').innerHTML = rows.length ? tableHTML(rows) : '<div class="msg ok">✅ Aucune anomalie commande.</div>';
+}
  $('#btn-p7').addEventListener('click', async () => {
-  try { p7Data = (await api('/api/page7', {method: 'POST'})).rows;
-        $('#out-p7').innerHTML = p7Data.length ? tableHTML(searchFilter(p7Data, $('#f7-search').value))
-                                               : '<div class="msg ok">✅ Aucune anomalie commande.</div>'; }
-  catch (e){ $('#out-p7').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+  busy($('#btn-p7'), true, 'Extraction…');
+  try {
+    p7Rows = (await api('/api/page7', {method:'POST'})).rows;
+    renderP7();
+    toast(p7Rows.length ? p7Rows.length + ' anomalie(s) détectée(s)' : 'Aucune anomalie 🎉', p7Rows.length ? 'warn' : 'ok');
+  } catch(e){ toast(esc(e.message), 'err'); $('#out-p7').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+  busy($('#btn-p7'), false);
 });
- $('#f7-search').addEventListener('input', () => {
-  if (p7Data) $('#out-p7').innerHTML = tableHTML(searchFilter(p7Data, $('#f7-search').value));
+ $('#f7-search').addEventListener('input', debounce(renderP7, 250));
+ $('#btn-exp-p7').addEventListener('click', async () => { try { await downloadPost('/api/export_anom', 'anomalies_commande.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
+
+ $('#btn-matr').addEventListener('click', async () => {
+  busy($('#btn-matr'), true, 'Vérification…');
+  try {
+    const d = await api('/api/matricules');
+    let h = '';
+    h += d.mismatch.rows.length
+      ? `<div class="msg warn">⚠️ ${d.mismatch.rows.length} matricule(s) paie différent(s) entre planning et Liste Actif.</div>` + tableHTML(d.mismatch.rows)
+      : '<div class="msg ok">✅ Tous les matricules paie présents dans la Liste Actif correspondent au planning.</div>';
+    h += d.notfound.rows.length
+      ? `<details class="mt"><summary>ℹ️ ${d.notfound.rows.length} collaborateur(s) introuvable(s) dans la Liste Actif</summary>${tableHTML(d.notfound.rows)}</details>`
+      : '';
+    $('#out-matr').innerHTML = h;
+  } catch(e){ $('#out-matr').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+  busy($('#btn-matr'), false);
 });
 
 /* ---------- Init ---------- */
-refreshState().then(() => { loadPage1(); syncFilterOptions(); });
+refreshState().then(loadP1).catch(()=>{});
