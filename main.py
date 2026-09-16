@@ -48,6 +48,21 @@ def current_data():
     if not isinstance(cmd, pd.DataFrame) or cmd.empty: cmd = None
     return week, pl, cmd
 
+def _to_float(v, default=0.0):
+    try:
+        if v is None: return float(default)
+        f = float(v)
+        return f if f == f else float(default)
+    except Exception:
+        return float(default)
+
+def _to_int(v, default=0):
+    try:
+        if v is None: return int(default)
+        return int(float(v))
+    except Exception:
+        return int(default)
+
 # ================= FONCTIONS UTILITAIRES (logique Streamlit, inchangée) =================
 def is_planned(val):
     if pd.isna(val) or isinstance(val, bool): return False
@@ -203,17 +218,13 @@ def derive_week_dates(week_key):
     return {}
 
 def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, taux_default):
-    melted = pd.DataFrame()
-    if cmd_df is not None and not cmd_df.empty:
-        day_cols = [j for j in jours if j in cmd_df.columns]
-        melted = cmd_df.melt(id_vars=["Paid ID"], value_vars=day_cols, var_name="Jour", value_name="Brut")
-        melted = melted[melted["Brut"].notna()].copy()
-        melted["Brut"] = melted["Brut"].astype(str).str.strip()
-        melted = melted[melted["Brut"] != ""]
-        melted["Entite"] = melted["Paid ID"].astype(str).apply(lambda x: mapping.get(get_prefix(x), "PROD / PLANIFIÉ PROD"))
-        melted["Absence"] = melted["Brut"].apply(is_absence_label)
-        melted["Menu"] = melted["Brut"].apply(clean_menu_label)
-
+    """Logique Recap :
+    - entité par préfixe matricule (« SA » → SUPPORT + SAI) ;
+    - règle métier : commandes PROD de personnes NON planifiées ce jour ⇒ non comptabilisées ;
+      commandes PRESTA / SUPPORT+SAI comptées normalement ;
+    - SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » ;
+    - A preparer = Nombres × (1 − taux d'absence prévu), ouvrés et week-end confondus."""
+    # 1) Planifiés par (jour, entité) — d'abord, pour la règle PROD
     planned_ids = {(j, e): set() for j in jours for e in ENTITES}
     if planning_df is not None and not planning_df.empty:
         p = planning_df.copy()
@@ -224,6 +235,24 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
             if f"{j}_Flag" in p.columns:
                 for ent, g in p[p[f"{j}_Flag"] == 1].groupby("Entite"):
                     planned_ids[(j, ent)] |= set(g["Paid ID"])
+
+    # 2) Commandes
+    melted = pd.DataFrame()
+    if cmd_df is not None and not cmd_df.empty:
+        day_cols = [j for j in jours if j in cmd_df.columns]
+        melted = cmd_df.melt(id_vars=["Paid ID"], value_vars=day_cols, var_name="Jour", value_name="Brut")
+        melted = melted[melted["Brut"].notna()].copy()
+        melted["Brut"] = melted["Brut"].astype(str).str.strip()
+        melted = melted[melted["Brut"] != ""]
+        melted["Entite"] = melted["Paid ID"].astype(str).apply(lambda x: mapping.get(get_prefix(x), "PROD / PLANIFIÉ PROD"))
+        melted["Absence"] = melted["Brut"].apply(is_absence_label)
+        melted["Menu"] = melted["Brut"].apply(clean_menu_label)
+        # Règle : PROD non planifié ce jour ⇒ non comptabilisé
+        if not melted.empty:
+            melted = melted[
+                ~((melted["Entite"] == "PROD / PLANIFIÉ PROD") &
+                  (~melted.apply(lambda r: r["Paid ID"] in planned_ids.get((r["Jour"], r["Entite"]), set()), axis=1)))
+            ]
 
     menus_cnt, abs_cnt, ordered, day_menu_totals = {}, {}, {}, {}
     if not melted.empty:
@@ -268,9 +297,8 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
         day_totals[j] = sum(recap[(j, e)]["total_prep"] for e in ENTITES_MAIN)
     return recap, day_totals
 
-# ================= SÉRIALISATION ROBUSTE (correctif n°1) =================
+# ================= SÉRIALISATION ROBUSTE =================
 def jsonable(v):
-    """Convertit TOUS les types pandas/numpy/datetime en JSON sûr. Ne lève jamais d'erreur."""
     try:
         if v is None or v is pd.NaT: return None
         if isinstance(v, bool): return bool(v)
@@ -295,9 +323,7 @@ def jsonable(v):
 def df_payload(df):
     if df is None: return {'columns': [], 'rows': []}
     cols = [str(c) for c in df.columns]
-    rows = []
-    for rec in df.to_dict('records'):
-        rows.append({str(c): jsonable(v) for c, v in rec.items()})
+    rows = [{str(c): jsonable(v) for c, v in rec.items()} for rec in df.to_dict('records')]
     return {'columns': cols, 'rows': rows}
 
 # ================= PARSING (logique Streamlit, adaptée aux bytes) =================
@@ -399,9 +425,8 @@ def parse_reference(src_bytes):
     df = df[~df[wd_col].isin(['NAN', 'NONE', '*', ''])]
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
-# ================= CONSTRUCTEURS PARTAGÉS (page + export utilisent la MÊME logique) =================
+# ================= CONSTRUCTEURS PARTAGÉS =================
 def _apply_filters(pl):
-    """Filtres serveur : transport, projet, statut + recherche globale (Workday/Paid/Nom)."""
     out = pl.copy()
     for col, key in (('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')):
         v = (request.args.get(key) or '').strip()
@@ -583,7 +608,6 @@ def api_delete_week():
     STATE['current_week'] = next(iter(sorted(STATE['plannings'])), None)
     save_state(); return {'ok': True}
 
-# ---------- PAGE 1 : planning regroupé (ordre de colonnes identique au Streamlit) ----------
 @app.get('/api/page1')
 def api_page1():
     week, pl, _ = current_data()
@@ -613,15 +637,14 @@ def api_export_page1():
             disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
     return dl(excel_bytes(_apply_filters(disp)), 'planning_regroupé.xlsx')
 
-# ---------- PAGE 2 ----------
 @app.get('/api/page2')
 def api_page2():
     _, pl, _ = current_data()
     if pl is None: return {'rows': [], 'metrics': {}}
     pl = _apply_filters(pl)
     if pl.empty: return {'rows': [], 'metrics': {j: 0 for j in JOURS}}
-    taux = float(request.args.get('taux', 0) or 0)
-    prest = [int(float(request.args.get(f'prest_{j}', 0) or 0)) for j in JOURS]
+    taux = _to_float(request.args.get('taux'), 0)
+    prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
     p = df_payload(pivot.reset_index())
     p['metrics'] = {j: int(round(float(pivot.loc['Total à commander', j]))) for j in JOURS}
@@ -632,11 +655,10 @@ def api_export_page2():
     _, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
     pl = _apply_filters(pl)
-    taux = float(request.args.get('taux', 0) or 0)
-    prest = [int(float(request.args.get(f'prest_{j}', 0) or 0)) for j in JOURS]
+    taux = _to_float(request.args.get('taux'), 0)
+    prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     return dl(excel_bytes(build_pivot(pl, taux, prest).reset_index()), 'effectifs.xlsx')
 
-# ---------- PAGE 3 ----------
 @app.get('/api/page3')
 def api_page3():
     _, pl, _ = current_data()
@@ -654,7 +676,6 @@ def api_export_page3():
     if pivot is None: return jsonify({'error': 'Aucun shift trouvé'}), 400
     return dl(excel_multi({'Resume': pivot.reset_index(), 'Detail': detail}), 'shifts.xlsx')
 
-# ---------- PAGE 4 ----------
 @app.get('/api/page4')
 def api_page4():
     _, pl, _ = current_data()
@@ -669,7 +690,6 @@ def api_export_page4():
     slots, peaks = build_slots_peaks(_apply_filters(pl))
     return dl(excel_multi({'Pics': peaks.reset_index(), 'Creneaux': slots.reset_index()}), 'creneaux_pics.xlsx')
 
-# ---------- PAGE 5 ----------
 @app.post('/api/page5')
 def api_page5():
     week, pl, cmd = current_data()
@@ -686,7 +706,6 @@ def api_export_conf():
     if conf is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(conf), 'confrontation.xlsx')
 
-# ---------- PAGE 6 : Recap ----------
 @app.get('/api/prefixes')
 def api_prefixes():
     week, pl, cmd = current_data()
@@ -695,71 +714,81 @@ def api_prefixes():
     if pl is not None: ids |= set(pl['Paid ID'].astype(str))
     prefixes = sorted({get_prefix(i) for i in ids if i and i.strip() and i.upper() not in ('NAN', 'NONE')})
     seed = build_entity_seed(cmd if cmd is not None else pd.DataFrame())
-    saved = STATE['calculs'].get(week, {}).get('mapping', {})
+    saved = STATE['calculs'].get(week, {}).get('mapping', {}) if week else {}
     return {'entities': ENTITES,
             'prefixes': [{'prefix': p, 'current': saved.get(p) or seed.get(p) or 'PROD / PLANIFIÉ PROD'}
                          for p in prefixes]}
 
-def _recap_compute(mapping, taux, presta):
+def _recap_compute(body):
     week, pl, cmd = current_data()
-    t = {e: float(taux.get(e, 5)) for e in ENTITES_MAIN}
-    return week, pl, cmd, *compute_recap_menus(pl, cmd, mapping or {}, JOURS, t, t.get('PROD / PLANIFIÉ PROD', 5))
+    raw_taux = body.get('taux') or {}
+    taux = {e: _to_float(raw_taux.get(e), 5) for e in ENTITES_MAIN}
+    mapping_raw = body.get('mapping') or {}
+    mapping = {str(k)[:2].upper(): v for k, v in mapping_raw.items() if v in ENTITES}
+    presta = {j: _to_int((body.get('presta_prevus') or {}).get(j)) for j in JOURS}
+    recap, day_totals = compute_recap_menus(pl, cmd, mapping, JOURS, taux, taux.get('PROD / PLANIFIÉ PROD', 5))
+    return week, pl, cmd, recap, day_totals, presta
 
 @app.post('/api/recap')
 def api_recap():
-    body = request.get_json(force=True)
-    mapping, taux, presta = body.get('mapping') or {}, body.get('taux') or {}, body.get('presta_prevus') or {}
-    week, pl, cmd, recap, day_totals = _recap_compute(mapping, taux, presta)
-    if cmd is None: return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes."}), 400
-    if week:
-        STATE['calculs'].setdefault(week, {})['mapping'] = mapping
-        save_state()
-    dates = derive_week_dates(week)
-    mois_fr = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
-               "septembre", "octobre", "novembre", "décembre"]
-    days, day_order, summary = {}, [], []
-    for j in JOURS:
-        d = dates.get(j)
-        date_txt = f"{d.day:02d} {mois_fr[d.month-1]} {d.year}" if d else ""
-        prest_n = int(presta.get(j, 0) or 0)
-        a_cmd = day_totals[j] + prest_n
-        entities = []
-        for ent in ENTITES_MAIN:
-            blk = recap[(j, ent)]
-            rows = [{'Choix': r['Choix'], 'Nombres': r['Nombres'],
-                     'Pourcentage': round(float(r['Pourcentage']), 1),
-                     'A preparer': (r['A preparer'] if r['A preparer'] != '' else None)}
-                    for r in blk['df'].to_dict('records')]
-            entities.append({'entity': ent, 'color': ENTITY_COLORS[ent], 'planned_n': blk['planned_n'],
-                             'reponses': blk['reponses'], 'abs_n': blk['abs_n'],
-                             'sans_choix': blk['sans_choix'], 'rows': rows})
-        blk_a = recap[(j, 'AUTRE / IGNORÉ')]
-        warn = (f"{blk_a['total_n']} commande(s) / {blk_a['planned_n']} planifié(s) avec un préfixe non classé "
-                f"(onglet 6, table de correspondance).") if (blk_a['total_n'] > 0 or blk_a['planned_n'] > 0) else None
-        days[j] = {'date': date_txt, 'a_commander': a_cmd, 'presta': prest_n,
-                   'ent_line': " • ".join(f"{e} : {recap[(j, e)]['total_prep']}" for e in ENTITES_MAIN),
-                   'entities': entities, 'warn': warn}
-        day_order.append(j)
-        row = {'Jour': j}; row.update({e: recap[(j, e)]['total_prep'] for e in ENTITES_MAIN})
-        row.update({'Presta. prévus': prest_n, 'À commander': a_cmd}); summary.append(row)
-    total = {'Jour': 'TOTAL SEMAINE'}
-    for k in ENTITES_MAIN + ['Presta. prévus', 'À commander']:
-        total[k] = sum(r[k] for r in summary)
-    summary.append(total)
-    return {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
-            'has_planning': pl is not None}
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        week, pl, cmd, recap, day_totals, presta = _recap_compute(body)
+        if cmd is None:
+            return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes dans la barre latérale."}), 400
+        if week:
+            STATE['calculs'].setdefault(week, {})['mapping'] = {str(k)[:2].upper(): v for k, v in (body.get('mapping') or {}).items() if v in ENTITES}
+            save_state()
+        dates = derive_week_dates(week)
+        mois_fr = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
+                   "septembre", "octobre", "novembre", "décembre"]
+        days, day_order, summary = {}, [], []
+        for j in JOURS:
+            d = dates.get(j)
+            date_txt = f"{d.day:02d} {mois_fr[d.month-1]} {d.year}" if d else ""
+            prest_n = presta[j]
+            a_cmd = day_totals[j] + prest_n
+            entities = []
+            for ent in ENTITES_MAIN:
+                blk = recap[(j, ent)]
+                rows = [{'Choix': r['Choix'], 'Nombres': _to_int(r['Nombres']),
+                         'Pourcentage': round(float(r['Pourcentage']), 1),
+                         'A preparer': (_to_int(r['A preparer']) if isinstance(r['A preparer'], (int, np.integer)) else None)}
+                        for r in blk['df'].to_dict('records')]
+                entities.append({'entity': ent, 'color': ENTITY_COLORS[ent], 'planned_n': blk['planned_n'],
+                                 'reponses': blk['reponses'], 'abs_n': blk['abs_n'],
+                                 'sans_choix': blk['sans_choix'], 'rows': rows})
+            blk_a = recap[(j, 'AUTRE / IGNORÉ')]
+            warn = (f"{blk_a['total_n']} commande(s) / {blk_a['planned_n']} planifié(s) avec un préfixe non classé "
+                    f"(onglet 6, table de correspondance).") if (blk_a['total_n'] > 0 or blk_a['planned_n'] > 0) else None
+            days[j] = {'date': date_txt, 'a_commander': a_cmd, 'presta': prest_n,
+                       'ent_line': " • ".join(f"{e} : {recap[(j, e)]['total_prep']}" for e in ENTITES_MAIN),
+                       'entities': entities, 'warn': warn}
+            day_order.append(j)
+            row = {'Jour': j}; row.update({e: recap[(j, e)]['total_prep'] for e in ENTITES_MAIN})
+            row.update({'Presta. prévus': prest_n, 'À commander': a_cmd}); summary.append(row)
+        total = {'Jour': 'TOTAL SEMAINE'}
+        for k in ENTITES_MAIN + ['Presta. prévus', 'À commander']:
+            total[k] = sum(r[k] for r in summary)
+        summary.append(total)
+        return {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
+                'has_planning': pl is not None}
+    except Exception as e:
+        return jsonify({'error': f"Erreur de calcul : {e}"}), 400
 
 @app.post('/api/export_recap')
 def api_export_recap():
-    body = request.get_json(force=True)
-    week, pl, cmd, recap, _ = _recap_compute(body.get('mapping') or {}, body.get('taux') or {}, body.get('presta_prevus') or {})
-    if cmd is None: return jsonify({'error': "Aucune commande disponible."}), 400
-    export_rows = [{'Jour': j, 'Entité': ent, 'Choix': r['Choix'], 'Nombres': r['Nombres'],
-                    'Pourcentage (%)': round(float(r['Pourcentage']), 1), 'A preparer': r['A preparer']}
-                   for j in JOURS for ent in ENTITES for _, r in recap[(j, ent)]['df'].iterrows()]
-    return dl(excel_bytes(pd.DataFrame(export_rows), 'Recap'), 'recap_commandes_menus.xlsx')
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        week, pl, cmd, recap, _, _ = _recap_compute(body)
+        if cmd is None: return jsonify({'error': "Aucune commande disponible."}), 400
+        export_rows = [{'Jour': j, 'Entité': ent, 'Choix': r['Choix'], 'Nombres': r['Nombres'],
+                        'Pourcentage (%)': round(float(r['Pourcentage']), 1), 'A preparer': r['A preparer']}
+                       for j in JOURS for ent in ENTITES for _, r in recap[(j, ent)]['df'].iterrows()]
+        return dl(excel_bytes(pd.DataFrame(export_rows), 'Recap'), 'recap_commandes_menus.xlsx')
+    except Exception as e:
+        return jsonify({'error': f"Erreur d'export : {e}"}), 400
 
-# ---------- PAGE 7 ----------
 @app.post('/api/page7')
 def api_page7():
     conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
