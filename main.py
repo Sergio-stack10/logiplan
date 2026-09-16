@@ -15,7 +15,7 @@ ENTITY_COLORS = {"PRESTA": "#4472C4", "SUPPORT + SAI": "#1F9AA8",
                  "PROD / PLANIFIÉ PROD": "#548235", "AUTRE / IGNORÉ": "#7F7F7F"}
 DATA_FILE = 'logiplan_state.pkl'
 
-# ================= RÈGLES DE CORRESPONDANCE PRÉFIXE → ENTITÉ (métier) =================
+# ================= RÈGLES MÉTIER PRÉFIXE → ENTITÉ =================
 # SA -> SUPPORT + SAI | AU, AT, FU, GU -> PRESTA | tout le reste (ST, W, WL...) -> PROD
 PREFIX_RULES = {
     "SA": "SUPPORT + SAI",
@@ -25,6 +25,34 @@ DEFAULT_ENTITY = "PROD / PLANIFIÉ PROD"
 
 def default_entity_for(prefix):
     return PREFIX_RULES.get(str(prefix).upper(), DEFAULT_ENTITY)
+
+def ent_of(mat, mapping):
+    """Entité d'un matricule : correspondance manuelle > règles métier > PROD."""
+    p = get_prefix(mat)
+    return mapping.get(p) or PREFIX_RULES.get(p, DEFAULT_ENTITY)
+
+# ================= NORMALISATION DES IDENTIFIANTS (correctif « float ») =================
+def clean_id(x):
+    """Normalise un identifiant : float 1234.0 -> '1234', NaN -> '', texte -> strip+upper."""
+    try:
+        if x is None: return ""
+        if isinstance(x, float):
+            if x != x: return ""          # NaN
+            x = int(x) if x == int(x) else x
+        s = str(x).strip().upper()
+        return "" if s in ('NAN', 'NONE', '<NA>', 'NULL', 'NAT') else s
+    except Exception:
+        return ""
+
+def safe_paid_ids(df):
+    """Extraction immunisée des Paid ID, quel que soit le contenu (floats, NaN, mélange)."""
+    out = set()
+    if not isinstance(df, pd.DataFrame) or 'Paid ID' not in df.columns:
+        return out
+    for x in df['Paid ID'].tolist():
+        s = clean_id(x)
+        if s: out.add(s)
+    return out
 
 # ================= ÉTAT PERSISTANT (durci) =================
 def load_state():
@@ -37,7 +65,6 @@ def load_state():
             s = {}
     else:
         s = {}
-    # Coercion stricte : aucune structure héritée d'une ancienne version ne peut faire planter l'app
     if not isinstance(s.get('plannings'), dict): s['plannings'] = {}
     if not isinstance(s.get('commandes'), dict): s['commandes'] = {}
     if not isinstance(s.get('calculs'), dict): s['calculs'] = {}
@@ -179,11 +206,6 @@ def get_prefix(mat):
     m = str(mat).strip().upper()
     return m[:2] if len(m) >= 2 else m
 
-def ent_of(mat, mapping):
-    """Entité d'un matricule : correspondance manuelle > règles métier > PROD."""
-    p = get_prefix(mat)
-    return mapping.get(p) or PREFIX_RULES.get(p, DEFAULT_ENTITY)
-
 def is_absence_label(val):
     if pd.isna(val): return False
     s = strip_accents(str(val)).upper()
@@ -215,16 +237,15 @@ def derive_week_dates(week_key):
 
 def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, taux_default):
     """Logique Recap :
-    - entité par préfixe matricule (règles : SA→SUPPORT+SAI, AU/AT/FU/GU→PRESTA, reste→PROD) ;
+    - entité par préfixe matricule (SA→SUPPORT+SAI, AU/AT/FU/GU→PRESTA, reste→PROD) ;
     - commandes PROD de personnes NON planifiées ce jour ⇒ non comptabilisées ;
-      PRESTA / SUPPORT+SAI comptées normalement ;
     - SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » ;
     - A preparer = Nombres × (1 − absence prévue), ouvrés et week-end."""
     planned_ids = {(j, e): set() for j in jours for e in ENTITES}
     if planning_df is not None and not planning_df.empty:
         p = planning_df.copy()
-        p["Paid ID"] = p["Paid ID"].astype(str)
-        p = p[~p["Paid ID"].isin(["", "NAN", "NONE", "*"])]
+        p["Paid ID"] = p["Paid ID"].apply(clean_id)      # immunisé contre les floats
+        p = p[p["Paid ID"] != ""]
         p["Entite"] = p["Paid ID"].apply(lambda x: ent_of(x, mapping))
         for j in jours:
             if f"{j}_Flag" in p.columns:
@@ -233,16 +254,19 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
 
     melted = pd.DataFrame()
     if cmd_df is not None and not cmd_df.empty:
-        day_cols = [j for j in jours if j in cmd_df.columns]
-        melted = cmd_df.melt(id_vars=["Paid ID"], value_vars=day_cols, var_name="Jour", value_name="Brut")
-        melted = melted[melted["Brut"].notna()].copy()
-        melted["Brut"] = melted["Brut"].astype(str).str.strip()
-        melted = melted[melted["Brut"] != ""]
-        melted["Entite"] = melted["Paid ID"].astype(str).apply(lambda x: ent_of(x, mapping))
-        melted["Absence"] = melted["Brut"].apply(is_absence_label)
-        melted["Menu"] = melted["Brut"].apply(clean_menu_label)
-        # Règle métier : PROD non planifié ce jour ⇒ non comptabilisé
-        if not melted.empty:
+        c = cmd_df.copy()
+        c["Paid ID"] = c["Paid ID"].apply(clean_id)      # immunisé contre les floats
+        c = c[c["Paid ID"] != ""]
+        day_cols = [j for j in jours if j in c.columns]
+        if day_cols:
+            melted = c.melt(id_vars=["Paid ID"], value_vars=day_cols, var_name="Jour", value_name="Brut")
+            melted = melted[melted["Brut"].notna()].copy()
+            melted["Brut"] = melted["Brut"].astype(str).str.strip()
+            melted = melted[melted["Brut"] != ""]
+            melted["Entite"] = melted["Paid ID"].apply(lambda x: ent_of(x, mapping))
+            melted["Absence"] = melted["Brut"].apply(is_absence_label)
+            melted["Menu"] = melted["Brut"].apply(clean_menu_label)
+            # Règle métier : PROD non planifié ce jour ⇒ non comptabilisé
             keep = melted.apply(
                 lambda r: (r["Entite"] != "PROD / PLANIFIÉ PROD")
                           or (r["Paid ID"] in planned_ids.get((r["Jour"], r["Entite"]), set())), axis=1)
@@ -390,8 +414,8 @@ def parse_commande(src_bytes, jours):
     day_idx = list(range(2, 9)) if len(df.columns) >= 9 else list(range(1, 8))
     out = df.iloc[:, [0] + day_idx].copy()
     out.columns = ["Paid ID"] + jours
-    out["Paid ID"] = out["Paid ID"].astype(str).str.replace(" ", "").str.upper()
-    out = out[out["Paid ID"].str.contains(r'[A-Z]-?\d', na=False)]
+    out["Paid ID"] = out["Paid ID"].apply(clean_id)
+    out = out[out["Paid ID"] != ""]
     out = out[~out["Paid ID"].str.contains("EXEMPLE|VOTRE|MATRICULE", na=False)]
     return out
 
@@ -481,6 +505,12 @@ def build_slots_peaks(pl):
     return slots, peaks
 
 def build_conf(pl, cmd):
+    # Normalisation des Paid ID des DEUX côtés avant la fusion (floats/NaN immunisés)
+    pl = pl.copy(); cmd = cmd.copy()
+    pl['Paid ID'] = pl['Paid ID'].apply(clean_id)
+    cmd['Paid ID'] = cmd['Paid ID'].apply(clean_id)
+    pl = pl[pl['Paid ID'] != '']
+    cmd = cmd[cmd['Paid ID'] != '']
     merged = pd.merge(pl, cmd, on='Paid ID', how='outer')
     display_rows = []
     for _, row in merged.iterrows():
@@ -532,7 +562,6 @@ def dl(buf, filename):
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 # ================= GESTIONNAIRE D'ERREURS GLOBAL =================
-# Tout 500 affiche désormais son vrai message (toast rouge côté interface + logs Render)
 @app.errorhandler(Exception)
 def handle_exception(e):
     app.logger.exception("Erreur serveur LogiPlan")
@@ -650,7 +679,8 @@ def api_page2():
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
     p = df_payload(pivot)
-    p['metrics'] = {j: int(round(float(pivot.loc[pivot['Projet'] == 'Total à commander', j].iloc[0]))) if (pivot['Projet'] == 'Total à commander').any() else 0 for j in JOURS}
+    tot = pivot[pivot['Projet'] == 'Total à commander']
+    p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
     return p
 
 @app.get('/api/export_page2')
@@ -714,10 +744,9 @@ def api_export_conf():
 def api_prefixes():
     try:
         week, pl, cmd = current_data()
-        ids = set()
-        if cmd is not None: ids |= set(cmd['Paid ID'].astype(str))
-        if pl is not None: ids |= set(pl['Paid ID'].astype(str))
-        prefixes = sorted({get_prefix(i) for i in ids if i and i.strip() and i.upper() not in ('NAN', 'NONE')})
+        # Extraction 100 % immunisée : plus aucun .strip() sur un float possible
+        ids = safe_paid_ids(cmd) | safe_paid_ids(pl)
+        prefixes = sorted({p[:2] for p in ids if len(p) >= 2})
         wk_calc = STATE['calculs'].get(week) if week else None
         saved = wk_calc.get('mapping', {}) if isinstance(wk_calc, dict) else {}
         return {'entities': ENTITES,
