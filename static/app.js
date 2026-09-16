@@ -32,6 +32,15 @@ function fillSelect(sel, values){
   sel.innerHTML = '<option value="">Tous</option>' +
     (values||[]).map(v => `<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
 }
+
+/* ORDRE DES COLONNES VERROUILLÉ CÔTÉ INTERFACE (garantie anti-désordre) */
+function orderedRows(rows, order){
+  if (!rows || !rows.length) return rows;
+  const known = new Set(order);
+  const extra = Object.keys(rows[0]).filter(c => !known.has(c));
+  const cols = order.concat(extra);
+  return rows.map(r => { const o = {}; cols.forEach(c => o[c] = r[c]); return o; });
+}
 function isTotalRow(r){ return Object.values(r).some(v =>
   ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique'].includes(String(v ?? ''))); }
 function tableHTML(rows, o={}){
@@ -115,7 +124,7 @@ async function refreshState(){
   if (b.dataset.tab === 'p6') await loadPrefixes();
 }));
 
-/* ---------- PAGE 1 : Planning regroupé ---------- */
+/* ---------- PAGE 1 : Planning regroupé (ordre codé en dur) ---------- */
 async function loadP1(){
   const p = new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value,
                                  statut:$('#f1-statut').value, q:$('#f1-search').value});
@@ -165,7 +174,7 @@ function planTable(rows){
  $('#btn-exp-p1').addEventListener('click', () =>
   window.open('/api/export_page1?' + new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value, statut:$('#f1-statut').value, q:$('#f1-search').value}), '_blank'));
 
-/* ---------- PAGE 2 : Effectifs (cartes alignées = 1 colonne par jour) ---------- */
+/* ---------- PAGE 2 : Effectifs — ordre Projet puis Lundi..Dimanche ---------- */
  $('#p2-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
  $('#btn-p2').addEventListener('click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
@@ -173,7 +182,7 @@ function planTable(rows){
     const p = new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value});
     JOURS.forEach(j => p.set('prest_' + j, $('#prest-' + j).value));
     const d = await api('/api/page2?' + p);
-    $('#out-p2').innerHTML = tableHTML(d.rows);
+    $('#out-p2').innerHTML = tableHTML(orderedRows(d.rows, ['Projet', ...JOURS]));
     $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
       `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
        <div class="val">${d.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
@@ -186,35 +195,39 @@ function planTable(rows){
   window.open('/api/export_page2?' + p, '_blank');
 });
 
-/* ---------- PAGE 3 ---------- */
+/* ---------- PAGE 3 : Shifts ---------- */
  $('#btn-p3').addEventListener('click', async () => {
   busy($('#btn-p3'), true, 'Calcul…');
   try {
     const p = new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value});
     const d = await api('/api/page3?' + p);
-    $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' + tableHTML(d.pivot.rows) +
-      `<details class="mt"><summary>👁️ Liste détaillée des personnes par shift</summary>${tableHTML(d.detail.rows)}</details>`;
+    $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
+      tableHTML(orderedRows(d.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
+      `<details class="mt"><summary>👁️ Liste détaillée des personnes par shift</summary>` +
+      tableHTML(orderedRows(d.detail.rows, ['Workday ID','Nom','Projet','Jour','Transport','Shift (Début)'])) + '</details>';
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p3'), false);
 });
  $('#btn-exp-p3').addEventListener('click', () =>
   window.open('/api/export_page3?' + new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value}), '_blank'));
 
-/* ---------- PAGE 4 ---------- */
+/* ---------- PAGE 4 : Créneaux ---------- */
  $('#btn-p4').addEventListener('click', async () => {
   busy($('#btn-p4'), true, 'Calcul…');
   try {
     const p = new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value});
     const d = await api('/api/page4?' + p);
-    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet (overlap de shifts)</h3>' + tableHTML(d.peaks.rows) +
-      `<details class="mt"><summary>🕒 Détail complet par créneau horaire</summary>${tableHTML(d.slots.rows)}</details>`;
+    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet (overlap de shifts)</h3>' +
+      tableHTML(orderedRows(d.peaks.rows, ['Projet', ...JOURS])) +
+      `<details class="mt"><summary>🕒 Détail complet par créneau horaire</summary>` +
+      tableHTML(orderedRows(d.slots.rows, ['Créneau', ...JOURS, 'Total Jour'])) + '</details>';
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p4'), false);
 });
  $('#btn-exp-p4').addEventListener('click', () =>
   window.open('/api/export_page4?' + new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value}), '_blank'));
 
-/* ---------- PAGE 5 : Confrontation ---------- */
+/* ---------- PAGE 5 : Confrontation (jours en bandes groupées) ---------- */
 let p5Rows = null;
 function confTable(rows){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée.</div>';
@@ -254,7 +267,7 @@ function renderP5(){ if (p5Rows) $('#out-p5').innerHTML = confTable(searchRows(p
  $('#f5-search').addEventListener('input', debounce(renderP5, 250));
  $('#btn-exp-p5').addEventListener('click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
 
-/* ---------- PAGE 6 : Recap (IDs indexés → plus d'erreur de sélecteur) ---------- */
+/* ---------- PAGE 6 : Recap ---------- */
 let mappingSel = {};
 async function loadPrefixes(){
   try {
@@ -279,7 +292,7 @@ async function loadPrefixes(){
   $$('#out-mapping .map-item').forEach(it => it.style.display = it.textContent.toLowerCase().includes(s) ? '' : 'none');
 }, 200));
 
-/* IDs indexés : t-0 / t-1 / t-2 (jamais de nom d'entité dans un sélecteur CSS) */
+/* IDs indexés (jamais de nom d'entité dans un sélecteur CSS) */
  $('#p6-taux').innerHTML = ENTITES_MAIN.map((e, i) =>
   `<label>${esc(e)} (%)<input type="number" id="t-${i}" min="0" max="50" step="0.5" value="${$('#inp-taux').value}"></label>`).join('');
  $('#p6-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="p6prest-${j}" min="0" value="0"></label>`).join('');
@@ -333,11 +346,12 @@ async function downloadPost(url, filename, body){
   catch(e){ toast(esc(e.message), 'err'); }
 });
 
-/* ---------- PAGE 7 ---------- */
+/* ---------- PAGE 7 : Anomalies (ordre verrouillé) ---------- */
 let p7Rows = null;
 function renderP7(){
   if (p7Rows === null) return;
-  const rows = searchRows(p7Rows, $('#f7-search').value);
+  const rows = orderedRows(searchRows(p7Rows, $('#f7-search').value),
+    ['Paid ID','Nom','Projet','Jour',"Type d'anomalie",'Commande']);
   $('#out-p7').innerHTML = rows.length ? tableHTML(rows) : '<div class="msg ok">✅ Aucune anomalie commande.</div>';
 }
  $('#btn-p7').addEventListener('click', async () => {
