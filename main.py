@@ -2,6 +2,7 @@ import os, io, re, pickle, datetime, unicodedata
 import pandas as pd
 import numpy as np
 from flask import Flask, request, jsonify, send_file, send_from_directory
+from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
@@ -14,18 +15,36 @@ ENTITY_COLORS = {"PRESTA": "#4472C4", "SUPPORT + SAI": "#1F9AA8",
                  "PROD / PLANIFIÉ PROD": "#548235", "AUTRE / IGNORÉ": "#7F7F7F"}
 DATA_FILE = 'logiplan_state.pkl'
 
-# ================= ÉTAT PERSISTANT =================
+# ================= RÈGLES DE CORRESPONDANCE PRÉFIXE → ENTITÉ (métier) =================
+# SA -> SUPPORT + SAI | AU, AT, FU, GU -> PRESTA | tout le reste (ST, W, WL...) -> PROD
+PREFIX_RULES = {
+    "SA": "SUPPORT + SAI",
+    "AU": "PRESTA", "AT": "PRESTA", "FU": "PRESTA", "GU": "PRESTA",
+}
+DEFAULT_ENTITY = "PROD / PLANIFIÉ PROD"
+
+def default_entity_for(prefix):
+    return PREFIX_RULES.get(str(prefix).upper(), DEFAULT_ENTITY)
+
+# ================= ÉTAT PERSISTANT (durci) =================
 def load_state():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, 'rb') as f:
                 s = pickle.load(f)
-            s.setdefault('plannings', {}); s.setdefault('commandes', {})
-            s.setdefault('reference', None); s.setdefault('calculs', {}); s.setdefault('current_week', None)
-            return s
+            if not isinstance(s, dict): s = {}
         except Exception:
-            pass
-    return {'plannings': {}, 'commandes': {}, 'reference': None, 'calculs': {}, 'current_week': None}
+            s = {}
+    else:
+        s = {}
+    # Coercion stricte : aucune structure héritée d'une ancienne version ne peut faire planter l'app
+    if not isinstance(s.get('plannings'), dict): s['plannings'] = {}
+    if not isinstance(s.get('commandes'), dict): s['commandes'] = {}
+    if not isinstance(s.get('calculs'), dict): s['calculs'] = {}
+    if not isinstance(s.get('current_week'), (str, type(None))): s['current_week'] = None
+    ref = s.get('reference')
+    if ref is not None and not isinstance(ref, pd.DataFrame): s['reference'] = None
+    return s
 
 STATE = load_state()
 
@@ -160,6 +179,11 @@ def get_prefix(mat):
     m = str(mat).strip().upper()
     return m[:2] if len(m) >= 2 else m
 
+def ent_of(mat, mapping):
+    """Entité d'un matricule : correspondance manuelle > règles métier > PROD."""
+    p = get_prefix(mat)
+    return mapping.get(p) or PREFIX_RULES.get(p, DEFAULT_ENTITY)
+
 def is_absence_label(val):
     if pd.isna(val): return False
     s = strip_accents(str(val)).upper()
@@ -171,34 +195,6 @@ def clean_menu_label(val):
     if s.upper() in VALEURS_NON_MENU: return None
     if is_absence_label(s): return None
     return s
-
-def normalize_entity(raw):
-    if raw is None or pd.isna(raw): return None
-    s = strip_accents(str(raw)).upper().strip()
-    if not s: return None
-    if "PRESTA" in s: return "PRESTA"
-    if "SUPPORT" in s or "SAI" in s: return "SUPPORT + SAI"
-    if "PROD" in s: return "PROD / PLANIFIÉ PROD"
-    return "AUTRE / IGNORÉ"
-
-def build_entity_seed(cmd_df):
-    seed = {}
-    try:
-        if cmd_df is not None and not cmd_df.empty:
-            dep_col = next((c for c in cmd_df.columns
-                            if "DEPARTEMENT" in strip_accents(str(c)).upper()
-                            or strip_accents(str(c)).upper() in ("DEPT", "ENTITE", "SERVICE")), None)
-            if dep_col:
-                tmp = cmd_df[["Paid ID", dep_col]].dropna(subset=[dep_col]).copy()
-                tmp["prefix"] = tmp["Paid ID"].astype(str).apply(get_prefix)
-                tmp["ent"] = tmp[dep_col].apply(normalize_entity)
-                tmp = tmp[tmp["ent"].notna()]
-                if not tmp.empty:
-                    seed = tmp.groupby("prefix")["ent"].agg(lambda x: x.mode().iloc[0]).to_dict()
-    except Exception:
-        pass
-    seed["SA"] = "SUPPORT + SAI"
-    return seed
 
 def derive_week_dates(week_key):
     try:
@@ -219,24 +215,22 @@ def derive_week_dates(week_key):
 
 def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, taux_default):
     """Logique Recap :
-    - entité par préfixe matricule (« SA » → SUPPORT + SAI) ;
-    - règle métier : commandes PROD de personnes NON planifiées ce jour ⇒ non comptabilisées ;
-      commandes PRESTA / SUPPORT+SAI comptées normalement ;
+    - entité par préfixe matricule (règles : SA→SUPPORT+SAI, AU/AT/FU/GU→PRESTA, reste→PROD) ;
+    - commandes PROD de personnes NON planifiées ce jour ⇒ non comptabilisées ;
+      PRESTA / SUPPORT+SAI comptées normalement ;
     - SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » ;
-    - A preparer = Nombres × (1 − taux d'absence prévu), ouvrés et week-end confondus."""
-    # 1) Planifiés par (jour, entité) — d'abord, pour la règle PROD
+    - A preparer = Nombres × (1 − absence prévue), ouvrés et week-end."""
     planned_ids = {(j, e): set() for j in jours for e in ENTITES}
     if planning_df is not None and not planning_df.empty:
         p = planning_df.copy()
         p["Paid ID"] = p["Paid ID"].astype(str)
         p = p[~p["Paid ID"].isin(["", "NAN", "NONE", "*"])]
-        p["Entite"] = p["Paid ID"].apply(lambda x: mapping.get(get_prefix(x), "PROD / PLANIFIÉ PROD"))
+        p["Entite"] = p["Paid ID"].apply(lambda x: ent_of(x, mapping))
         for j in jours:
             if f"{j}_Flag" in p.columns:
                 for ent, g in p[p[f"{j}_Flag"] == 1].groupby("Entite"):
                     planned_ids[(j, ent)] |= set(g["Paid ID"])
 
-    # 2) Commandes
     melted = pd.DataFrame()
     if cmd_df is not None and not cmd_df.empty:
         day_cols = [j for j in jours if j in cmd_df.columns]
@@ -244,15 +238,15 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
         melted = melted[melted["Brut"].notna()].copy()
         melted["Brut"] = melted["Brut"].astype(str).str.strip()
         melted = melted[melted["Brut"] != ""]
-        melted["Entite"] = melted["Paid ID"].astype(str).apply(lambda x: mapping.get(get_prefix(x), "PROD / PLANIFIÉ PROD"))
+        melted["Entite"] = melted["Paid ID"].astype(str).apply(lambda x: ent_of(x, mapping))
         melted["Absence"] = melted["Brut"].apply(is_absence_label)
         melted["Menu"] = melted["Brut"].apply(clean_menu_label)
-        # Règle : PROD non planifié ce jour ⇒ non comptabilisé
+        # Règle métier : PROD non planifié ce jour ⇒ non comptabilisé
         if not melted.empty:
-            melted = melted[
-                ~((melted["Entite"] == "PROD / PLANIFIÉ PROD") &
-                  (~melted.apply(lambda r: r["Paid ID"] in planned_ids.get((r["Jour"], r["Entite"]), set()), axis=1)))
-            ]
+            keep = melted.apply(
+                lambda r: (r["Entite"] != "PROD / PLANIFIÉ PROD")
+                          or (r["Paid ID"] in planned_ids.get((r["Jour"], r["Entite"]), set())), axis=1)
+            melted = melted[keep]
 
     menus_cnt, abs_cnt, ordered, day_menu_totals = {}, {}, {}, {}
     if not melted.empty:
@@ -326,6 +320,12 @@ def df_payload(df):
     rows = [{str(c): jsonable(v) for c, v in rec.items()} for rec in df.to_dict('records')]
     return {'columns': cols, 'rows': rows}
 
+def enforce_cols(df, order):
+    """Force l'ordre exact des colonnes (les manquantes sont créées vides)."""
+    for c in order:
+        if c not in df.columns: df[c] = ""
+    return df[order]
+
 # ================= PARSING (logique Streamlit, adaptée aux bytes) =================
 def get_week_number(data, engine):
     try:
@@ -388,18 +388,8 @@ def parse_commande(src_bytes, jours):
     df = pd.read_excel(io.BytesIO(src_bytes), header=header_row)
     df = df.rename(columns={df.columns[0]: 'Paid ID'})
     day_idx = list(range(2, 9)) if len(df.columns) >= 9 else list(range(1, 8))
-    extras, used = [], set()
-    for idx, c in enumerate(df.columns):
-        if idx == 0 or idx in day_idx: continue
-        cu = strip_accents(str(c)).upper().strip()
-        target = None
-        if cu in ("NOMS", "NOM", "PRENOMS", "PRÉNOMS", "PRENOM", "PRÉNOM"): target = "CMD_Nom"
-        elif cu in ("PROJETS", "PROJET"): target = "CMD_Projet"
-        elif "DEPARTEMENT" in cu or cu in ("DEPT", "ENTITE", "ENTITÉ", "SERVICE"): target = "CMD_Departement"
-        if target and target not in used:
-            extras.append((idx, target)); used.add(target)
-    out = df.iloc[:, [0] + day_idx + [i for i, _ in extras]].copy()
-    out.columns = ["Paid ID"] + jours + [t for _, t in extras]
+    out = df.iloc[:, [0] + day_idx].copy()
+    out.columns = ["Paid ID"] + jours
     out["Paid ID"] = out["Paid ID"].astype(str).str.replace(" ", "").str.upper()
     out = out[out["Paid ID"].str.contains(r'[A-Z]-?\d', na=False)]
     out = out[~out["Paid ID"].str.contains("EXEMPLE|VOTRE|MATRICULE", na=False)]
@@ -445,7 +435,7 @@ def build_pivot(pl, taux, prest):
     pivot.loc[f'Total Estimé (-{int(taux)}%)'] = (pivot.loc['Total Théorique'] * (1 - taux / 100)).round(0)
     pivot.loc['Prestataires (Hors Planning)'] = prest
     pivot.loc['Total à commander'] = pivot.loc[f'Total Estimé (-{int(taux)}%)'] + pivot.loc['Prestataires (Hors Planning)']
-    return pivot
+    return enforce_cols(pivot.reset_index(), ['Projet'] + JOURS)
 
 def build_shifts(pl):
     shift_rows = []
@@ -454,12 +444,14 @@ def build_shifts(pl):
             de = get_time_obj(row[f'{j}_DE'])
             if de:
                 shift_rows.append({'Workday ID': row['WORKDAY ID'], 'Nom': row['Nom'], 'Projet': row['Projet'],
-                                   'Transport': row['TRANSPORT'], 'Jour': j, 'Shift (Début)': de.strftime('%H:%M')})
+                                   'Jour': j, 'Transport': row['TRANSPORT'], 'Shift (Début)': de.strftime('%H:%M')})
     df = pd.DataFrame(shift_rows)
     if df.empty: return None, None
+    df = enforce_cols(df, ['Workday ID', 'Nom', 'Projet', 'Jour', 'Transport', 'Shift (Début)'])
     pivot = df.pivot_table(index='Shift (Début)', columns='Jour', values='Nom', aggfunc='count', fill_value=0)
     pivot = pivot.reindex(columns=JOURS, fill_value=0)
     pivot['Total Semaine'] = pivot.sum(axis=1); pivot.loc['Total'] = pivot.sum()
+    pivot = enforce_cols(pivot.reset_index(), ['Shift (Début)'] + JOURS + ['Total Semaine'])
     return pivot, df.sort_values(by=['Jour', 'Shift (Début)', 'Nom'])
 
 def build_slots_peaks(pl):
@@ -478,13 +470,15 @@ def build_slots_peaks(pl):
                 ph[projet][tgt][h] += 1
     slots['Total Jour'] = slots.sum(axis=1)
     slots.loc['Total par Créneau'] = slots.sum(axis=0)
+    slots = enforce_cols(slots.rename_axis('Créneau').reset_index(), ['Créneau'] + JOURS + ['Total Jour'])
     if ph:
         peaks = pd.DataFrame([{'Projet': p, **{j: (max(d[j].values()) if d[j].values() else 0) for j in JOURS}}
                               for p, d in ph.items()]).set_index('Projet')
         peaks.loc['Pic Global (Tous Projets)'] = peaks[JOURS].sum().to_dict()
+        peaks = enforce_cols(peaks.reset_index(), ['Projet'] + JOURS)
     else:
-        peaks = pd.DataFrame(columns=JOURS)
-    return slots.rename_axis('Créneau'), peaks
+        peaks = pd.DataFrame(columns=['Projet'] + JOURS)
+    return slots, peaks
 
 def build_conf(pl, cmd):
     merged = pd.merge(pl, cmd, on='Paid ID', how='outer')
@@ -537,6 +531,15 @@ def dl(buf, filename):
     return send_file(buf, download_name=filename,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+# ================= GESTIONNAIRE D'ERREURS GLOBAL =================
+# Tout 500 affiche désormais son vrai message (toast rouge côté interface + logs Render)
+@app.errorhandler(Exception)
+def handle_exception(e):
+    app.logger.exception("Erreur serveur LogiPlan")
+    if isinstance(e, HTTPException):
+        return jsonify({'error': e.description}), e.code
+    return jsonify({'error': f"Erreur serveur : {type(e).__name__} — {e}"}), 500
+
 # ================= ROUTES =================
 @app.get('/')
 def index():
@@ -569,10 +572,10 @@ def api_import():
     if not planning_valide(planning_df):
         return jsonify({'error': "Aucun planning exploitable (feuille « Tout (WFO+WFH) » ou « TMM » attendue)."}), 400
     warnings = []
-    prev_map = STATE['calculs'].get(week, {}).get('mapping')
+    prev_map = (STATE['calculs'].get(week) or {}).get('mapping') if isinstance(STATE['calculs'].get(week), dict) else None
     STATE['plannings'][week] = planning_df
     STATE['calculs'][week] = {}
-    if prev_map: STATE['calculs'][week]['mapping'] = prev_map
+    if isinstance(prev_map, dict): STATE['calculs'][week]['mapping'] = prev_map
     cmd_f = request.files.get('commande')
     if cmd_f:
         try:
@@ -646,8 +649,8 @@ def api_page2():
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
-    p = df_payload(pivot.reset_index())
-    p['metrics'] = {j: int(round(float(pivot.loc['Total à commander', j]))) for j in JOURS}
+    p = df_payload(pivot)
+    p['metrics'] = {j: int(round(float(pivot.loc[pivot['Projet'] == 'Total à commander', j].iloc[0]))) if (pivot['Projet'] == 'Total à commander').any() else 0 for j in JOURS}
     return p
 
 @app.get('/api/export_page2')
@@ -657,7 +660,7 @@ def api_export_page2():
     pl = _apply_filters(pl)
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
-    return dl(excel_bytes(build_pivot(pl, taux, prest).reset_index()), 'effectifs.xlsx')
+    return dl(excel_bytes(build_pivot(pl, taux, prest)), 'effectifs.xlsx')
 
 @app.get('/api/page3')
 def api_page3():
@@ -666,7 +669,7 @@ def api_page3():
     if pl is None: return empty
     pivot, detail = build_shifts(_apply_filters(pl))
     if pivot is None: return empty
-    return {'pivot': df_payload(pivot.reset_index()), 'detail': df_payload(detail)}
+    return {'pivot': df_payload(pivot), 'detail': df_payload(detail)}
 
 @app.get('/api/export_page3')
 def api_export_page3():
@@ -674,21 +677,21 @@ def api_export_page3():
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
     pivot, detail = build_shifts(_apply_filters(pl))
     if pivot is None: return jsonify({'error': 'Aucun shift trouvé'}), 400
-    return dl(excel_multi({'Resume': pivot.reset_index(), 'Detail': detail}), 'shifts.xlsx')
+    return dl(excel_multi({'Resume': pivot, 'Detail': detail}), 'shifts.xlsx')
 
 @app.get('/api/page4')
 def api_page4():
     _, pl, _ = current_data()
     if pl is None: return {'peaks': {'columns': [], 'rows': []}, 'slots': {'columns': [], 'rows': []}}
     slots, peaks = build_slots_peaks(_apply_filters(pl))
-    return {'peaks': df_payload(peaks.reset_index()), 'slots': df_payload(slots.reset_index())}
+    return {'peaks': df_payload(peaks), 'slots': df_payload(slots)}
 
 @app.get('/api/export_page4')
 def api_export_page4():
     _, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
     slots, peaks = build_slots_peaks(_apply_filters(pl))
-    return dl(excel_multi({'Pics': peaks.reset_index(), 'Creneaux': slots.reset_index()}), 'creneaux_pics.xlsx')
+    return dl(excel_multi({'Pics': peaks, 'Creneaux': slots}), 'creneaux_pics.xlsx')
 
 @app.post('/api/page5')
 def api_page5():
@@ -702,22 +705,27 @@ def api_page5():
 
 @app.post('/api/export_conf')
 def api_export_conf():
-    conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
+    wk = STATE.get('current_week')
+    conf = (STATE['calculs'].get(wk) or {}).get('conf') if isinstance(STATE['calculs'].get(wk), dict) else None
     if conf is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(conf), 'confrontation.xlsx')
 
 @app.get('/api/prefixes')
 def api_prefixes():
-    week, pl, cmd = current_data()
-    ids = set()
-    if cmd is not None: ids |= set(cmd['Paid ID'].astype(str))
-    if pl is not None: ids |= set(pl['Paid ID'].astype(str))
-    prefixes = sorted({get_prefix(i) for i in ids if i and i.strip() and i.upper() not in ('NAN', 'NONE')})
-    seed = build_entity_seed(cmd if cmd is not None else pd.DataFrame())
-    saved = STATE['calculs'].get(week, {}).get('mapping', {}) if week else {}
-    return {'entities': ENTITES,
-            'prefixes': [{'prefix': p, 'current': saved.get(p) or seed.get(p) or 'PROD / PLANIFIÉ PROD'}
-                         for p in prefixes]}
+    try:
+        week, pl, cmd = current_data()
+        ids = set()
+        if cmd is not None: ids |= set(cmd['Paid ID'].astype(str))
+        if pl is not None: ids |= set(pl['Paid ID'].astype(str))
+        prefixes = sorted({get_prefix(i) for i in ids if i and i.strip() and i.upper() not in ('NAN', 'NONE')})
+        wk_calc = STATE['calculs'].get(week) if week else None
+        saved = wk_calc.get('mapping', {}) if isinstance(wk_calc, dict) else {}
+        return {'entities': ENTITES,
+                'prefixes': [{'prefix': p, 'current': saved.get(p) or default_entity_for(p)}
+                             for p in prefixes]}
+    except Exception as e:
+        app.logger.exception("api_prefixes")
+        return jsonify({'error': f"Correspondance impossible : {e}"}), 400
 
 def _recap_compute(body):
     week, pl, cmd = current_data()
@@ -759,8 +767,8 @@ def api_recap():
                                  'reponses': blk['reponses'], 'abs_n': blk['abs_n'],
                                  'sans_choix': blk['sans_choix'], 'rows': rows})
             blk_a = recap[(j, 'AUTRE / IGNORÉ')]
-            warn = (f"{blk_a['total_n']} commande(s) / {blk_a['planned_n']} planifié(s) avec un préfixe non classé "
-                    f"(onglet 6, table de correspondance).") if (blk_a['total_n'] > 0 or blk_a['planned_n'] > 0) else None
+            warn = (f"{blk_a['total_n']} commande(s) / {blk_a['planned_n']} planifié(s) avec un préfixe classé "
+                    f"« AUTRE » manuellement.") if (blk_a['total_n'] > 0 or blk_a['planned_n'] > 0) else None
             days[j] = {'date': date_txt, 'a_commander': a_cmd, 'presta': prest_n,
                        'ent_line': " • ".join(f"{e} : {recap[(j, e)]['total_prep']}" for e in ENTITES_MAIN),
                        'entities': entities, 'warn': warn}
@@ -774,7 +782,8 @@ def api_recap():
         return {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
                 'has_planning': pl is not None}
     except Exception as e:
-        return jsonify({'error': f"Erreur de calcul : {e}"}), 400
+        app.logger.exception("api_recap")
+        return jsonify({'error': f"Erreur de calcul : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_recap')
 def api_export_recap():
@@ -787,17 +796,20 @@ def api_export_recap():
                        for j in JOURS for ent in ENTITES for _, r in recap[(j, ent)]['df'].iterrows()]
         return dl(excel_bytes(pd.DataFrame(export_rows), 'Recap'), 'recap_commandes_menus.xlsx')
     except Exception as e:
+        app.logger.exception("api_export_recap")
         return jsonify({'error': f"Erreur d'export : {e}"}), 400
 
 @app.post('/api/page7')
 def api_page7():
-    conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
+    wk = STATE.get('current_week')
+    conf = (STATE['calculs'].get(wk) or {}).get('conf') if isinstance(STATE['calculs'].get(wk), dict) else None
     if conf is None: return jsonify({'error': "Générez d'abord la confrontation (onglet 5)."}), 400
     return df_payload(build_anomalies(conf))
 
 @app.post('/api/export_anom')
 def api_export_anom():
-    conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
+    wk = STATE.get('current_week')
+    conf = (STATE['calculs'].get(wk) or {}).get('conf') if isinstance(STATE['calculs'].get(wk), dict) else None
     if conf is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(build_anomalies(conf)), 'anomalies_commande.xlsx')
 
