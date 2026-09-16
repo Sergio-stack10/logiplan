@@ -1,6 +1,8 @@
 'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 const ENTITES = ['PRESTA','SUPPORT + SAI','PROD / PLANIFIÉ PROD','AUTRE / IGNORÉ'];
+const ENTITES_MAIN = ENTITES.slice(0, 3);
+const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -20,18 +22,18 @@ async function api(url, opts={}){
 function debounce(fn, ms=280){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
 function busy(btn, on, label){
   if (!btn) return;
-  if (on){ btn.dataset.lbl = btn.innerHTML; btn.disabled = true; btn.innerHTML = '⏳ ' + (label||'Traitement…'); }
+  if (on){ btn.dataset.lbl = btn.innerHTML; btn.disabled = true; btn.innerHTML = '⏳ ' + (label||'…'); }
   else { btn.disabled = false; btn.innerHTML = btn.dataset.lbl; }
 }
+function numVal(id){ const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
+function intVal(id){ const el = document.getElementById(id); const v = el ? parseInt(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
 function fillSelect(sel, values){
   const cur = sel.value;
   sel.innerHTML = '<option value="">Tous</option>' +
     (values||[]).map(v => `<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
 }
-function totalRowClass(r){
-  return Object.values(r).some(v => ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique']
-    .includes(String(v ?? '')));
-}
+function isTotalRow(r){ return Object.values(r).some(v =>
+  ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique'].includes(String(v ?? ''))); }
 function tableHTML(rows, o={}){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
   const cols = Object.keys(rows[0]);
@@ -41,17 +43,25 @@ function tableHTML(rows, o={}){
     let cls = '';
     const c0 = String(r[cols[0]] ?? '');
     if (o.recap){ if (c0==='TOTAL') cls='total'; else if (c0==='SANS CHOIX') cls='sanschoix'; else if (c0.startsWith('dont ')) cls='dont'; }
-    else if (totalRowClass(r)) cls = 'total';
+    else if (isTotalRow(r)) cls = 'total';
     h += `<tr class="${cls}">` + cols.map(c => {
       let v = r[c];
       if (c === 'Pourcentage' && v !== null && v !== undefined && v !== '') v = Number(v).toFixed(1).replace('.', ',') + ' %';
-      return `<td>${esc(v)}</td>`;
+      return `<td title="${esc(v)}">${esc(v)}</td>`;
     }).join('') + '</tr>';
   });
   return h + '</tbody></table></div>';
 }
+function searchRows(rows, text){
+  if (!text) return rows;
+  const s = text.toLowerCase();
+  return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
+}
 
-/* ---------- Sidebar ---------- */
+/* ---------- Sidebar toggle ---------- */
+ $('#btn-side').addEventListener('click', () => document.body.classList.toggle('side-hidden'));
+
+/* ---------- Sidebar : import & semaines ---------- */
  $('#inp-taux').addEventListener('input', e => $('#taux-val').textContent = e.target.value + '%');
 
  $('#btn-import').addEventListener('click', async () => {
@@ -100,44 +110,17 @@ async function refreshState(){
   $$('.tab').forEach(x => x.classList.remove('active'));
   $$('.panel').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); $('#' + b.dataset.tab).classList.add('active');
+  window.scrollTo({top:0});
   if (b.dataset.tab === 'p1') await loadP1();
   if (b.dataset.tab === 'p6') await loadPrefixes();
 }));
 
 /* ---------- PAGE 1 : Planning regroupé ---------- */
-let p1Cache = null;
-
-function planTable(rows){
-  if (!rows || !rows.length) return '<div class="empty">Aucune ligne ne correspond aux filtres.</div>';
-  const base = ['TRANSPORT','WORKDAY ID','Paid ID','Nom','Projet','Statut'];
-  const lab = {DE:'Début', A:'Fin', Pause:'Pause', Flag:'✓'};
-  let h = '<div class="tscroll"><table class="data plan"><thead>';
-  h += '<tr class="grp-row"><th colspan="6">👤 Identité &amp; affectation</th>';
-  JOURS.forEach(j => h += `<th colspan="4">${j}</th>`);
-  h += '</tr><tr class="cols-row">';
-  base.forEach(c => h += `<th>${c==='TRANSPORT'?'Transport':c}</th>`);
-  JOURS.forEach(j => ['DE','A','Pause','Flag'].forEach(s => h += `<th>${lab[s]}</th>`));
-  h += '</tr></thead><tbody>';
-  rows.forEach(r => {
-    h += '<tr>';
-    base.forEach(c => h += `<td>${esc(r[c])}</td>`);
-    JOURS.forEach(j => {
-      const de = String(r[j+'_DE'] ?? '');
-      const on = de && de !== '00:00' ? ' class="on"' : '';
-      h += `<td${on}>${esc(de)||'—'}</td><td${on}>${esc(r[j+'_A'])||'—'}</td><td${on}>${esc(r[j+'_Pause'])||'—'}</td>`;
-      h += `<td class="flag${Number(r[j+'_Flag'])?' on':''}">${Number(r[j+'_Flag'])?'✓':''}</td>`;
-    });
-    h += '</tr>';
-  });
-  return h + '</tbody></table></div>';
-}
-
 async function loadP1(){
   const p = new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value,
                                  statut:$('#f1-statut').value, q:$('#f1-search').value});
   try {
     const d = await api('/api/page1?' + p);
-    p1Cache = d;
     fillSelect($('#f1-transport'), d.options.TRANSPORT || []);
     fillSelect($('#f1-projet'), d.options.Projet || []);
     fillSelect($('#f1-statut'), d.options.Statut || []);
@@ -152,12 +135,37 @@ async function loadP1(){
     $('#out-p1').innerHTML = planTable(d.rows);
   } catch(e){ $('#out-p1').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
 }
+
+function planTable(rows){
+  if (!rows || !rows.length) return '<div class="empty">Aucune ligne ne correspond aux filtres.</div>';
+  const base = ['TRANSPORT','WORKDAY ID','Paid ID','Nom','Projet','Statut'];
+  const lab = {DE:'Début', A:'Fin', Pause:'Pause', Flag:'✓'};
+  let h = '<div class="tscroll"><table class="data plan"><thead>';
+  h += '<tr class="grp-row"><th colspan="6">👤 Identité &amp; affectation</th>';
+  JOURS.forEach(j => h += `<th colspan="4">${j}</th>`);
+  h += '</tr><tr class="cols-row">';
+  base.forEach(c => h += `<th>${c==='TRANSPORT'?'Transport':c}</th>`);
+  JOURS.forEach(j => ['DE','A','Pause','Flag'].forEach(s => h += `<th>${lab[s]}</th>`));
+  h += '</tr></thead><tbody>';
+  rows.forEach(r => {
+    h += '<tr>';
+    base.forEach(c => h += `<td title="${esc(r[c])}">${esc(r[c])}</td>`);
+    JOURS.forEach(j => {
+      const de = String(r[j+'_DE'] ?? '');
+      const on = de && de !== '00:00' ? ' class="on"' : '';
+      h += `<td${on}>${esc(de)||'—'}</td><td${on}>${esc(r[j+'_A'])||'—'}</td><td${on}>${esc(r[j+'_Pause'])||'—'}</td>`;
+      h += `<td class="flag${Number(r[j+'_Flag'])?' on':''}">${Number(r[j+'_Flag'])?'✓':''}</td>`;
+    });
+    h += '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
 ['f1-transport','f1-projet','f1-statut'].forEach(id => $('#'+id).addEventListener('change', loadP1));
  $('#f1-search').addEventListener('input', debounce(loadP1, 300));
  $('#btn-exp-p1').addEventListener('click', () =>
   window.open('/api/export_page1?' + new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value, statut:$('#f1-statut').value, q:$('#f1-search').value}), '_blank'));
 
-/* ---------- PAGE 2 ---------- */
+/* ---------- PAGE 2 : Effectifs (cartes alignées = 1 colonne par jour) ---------- */
  $('#p2-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
  $('#btn-p2').addEventListener('click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
@@ -166,13 +174,17 @@ async function loadP1(){
     JOURS.forEach(j => p.set('prest_' + j, $('#prest-' + j).value));
     const d = await api('/api/page2?' + p);
     $('#out-p2').innerHTML = tableHTML(d.rows);
-    $('#p2-metrics').innerHTML = JOURS.map(j =>
-      `<div class="metric"><div class="lbl">${j}</div><div class="val">${d.metrics[j]} <small>pax</small></div></div>`).join('');
+    $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
+      `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
+       <div class="val">${d.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p2'), false);
 });
- $('#btn-exp-p2').addEventListener('click', () =>
-  window.open('/api/export_page2?' + new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value}), '_blank'));
+ $('#btn-exp-p2').addEventListener('click', () => {
+  const p = new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value});
+  JOURS.forEach(j => p.set('prest_' + j, $('#prest-' + j).value));
+  window.open('/api/export_page2?' + p, '_blank');
+});
 
 /* ---------- PAGE 3 ---------- */
  $('#btn-p3').addEventListener('click', async () => {
@@ -215,14 +227,14 @@ function confTable(rows){
   JOURS.forEach(() => h += '<th>Planning</th><th>Commande</th>');
   h += '</tr></thead><tbody>';
   rows.forEach(r => {
-    h += '<tr>' + base.map(c => `<td>${esc(r[c])}</td>`).join('');
+    h += '<tr>' + base.map(c => `<td title="${esc(r[c])}">${esc(r[c])}</td>`).join('');
     JOURS.forEach(j => {
       const pl = String(r[j + ' - Planning'] ?? '');
       const cm = String(r[j + ' - Commande'] ?? '');
       const plCell = pl === 'Planifié' ? '<span class="badge b-ok">Planifié</span>'
         : pl === 'hors planning' ? '<span class="badge b-warn">hors planning</span>'
         : pl ? `<span class="badge b-info">${esc(pl)}</span>` : '';
-      const cmCell = cm ? (/JE NE SERAI PAS/i.test(cm) ? '<span class="badge b-abs">Je ne serai pas présent</span>' : esc(cm)) : '';
+      const cmCell = cm ? (/JE NE SERAI PAS/i.test(cm) ? '<span class="badge b-abs">Je ne serai pas présent</span>' : `<span title="${esc(cm)}">${esc(cm)}</span>`) : '';
       h += `<td>${plCell}</td><td>${cmCell}</td>`;
     });
     h += '</tr>';
@@ -230,11 +242,6 @@ function confTable(rows){
   return h + '</tbody></table></div>';
 }
 function renderP5(){ if (p5Rows) $('#out-p5').innerHTML = confTable(searchRows(p5Rows, $('#f5-search').value)); }
-function searchRows(rows, text){
-  if (!text) return rows;
-  const s = text.toLowerCase();
-  return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
-}
  $('#btn-p5').addEventListener('click', async () => {
   busy($('#btn-p5'), true, 'Génération…');
   try {
@@ -245,9 +252,9 @@ function searchRows(rows, text){
   busy($('#btn-p5'), false);
 });
  $('#f5-search').addEventListener('input', debounce(renderP5, 250));
- $('#btn-exp-p5').addEventListener('click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx'); } catch(e){ toast(esc(e.message),'err'); } });
+ $('#btn-exp-p5').addEventListener('click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
 
-/* ---------- PAGE 6 : Recap ---------- */
+/* ---------- PAGE 6 : Recap (IDs indexés → plus d'erreur de sélecteur) ---------- */
 let mappingSel = {};
 async function loadPrefixes(){
   try {
@@ -272,15 +279,16 @@ async function loadPrefixes(){
   $$('#out-mapping .map-item').forEach(it => it.style.display = it.textContent.toLowerCase().includes(s) ? '' : 'none');
 }, 200));
 
- $('#p6-taux').innerHTML = ENTITES.slice(0,3).map(e =>
-  `<label>${esc(e)} (%)<input type="number" id="taux-${esc(e)}" min="0" max="50" step="0.5" value="${$('#inp-taux').value}"></label>`).join('');
+/* IDs indexés : t-0 / t-1 / t-2 (jamais de nom d'entité dans un sélecteur CSS) */
+ $('#p6-taux').innerHTML = ENTITES_MAIN.map((e, i) =>
+  `<label>${esc(e)} (%)<input type="number" id="t-${i}" min="0" max="50" step="0.5" value="${$('#inp-taux').value}"></label>`).join('');
  $('#p6-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="p6prest-${j}" min="0" value="0"></label>`).join('');
 
 function recapBody(){
   return {
     mapping: mappingSel,
-    taux: Object.fromEntries(ENTITES.slice(0,3).map(e => [e, parseFloat($('#taux-' + e).value || 0)])),
-    presta_prevus: Object.fromEntries(JOURS.map(j => [j, parseInt($('#p6prest-' + j).value || 0)]))
+    taux: Object.fromEntries(ENTITES_MAIN.map((e, i) => [e, numVal('t-' + i)])),
+    presta_prevus: Object.fromEntries(JOURS.map(j => [j, intVal('p6prest-' + j)]))
   };
 }
 function renderRecap(d){
