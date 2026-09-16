@@ -126,20 +126,22 @@
   <section id="p6" class="panel">
     <h2 class="page-title">🍽️ Commandes par menu</h2>
     <div class="card">
-      <p class="caption">Entité = préfixe du matricule (« SA » → SUPPORT + SAI · « AU/AT/FU/GU » → PRESTA · reste → PROD) ·
-        Les commandes <b>PROD de personnes non planifiées</b> ne sont pas comptées ·
-        SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » ·
-        L'<b>absence prévue</b> se règle dans chaque jour et s'applique uniquement à <b>PROD / PLANIFIÉ PROD</b>.</p>
+      <p class="caption">Entités (automatiques) : matricule commençant par <b>« W »</b> ou <b>« ST »</b> → <b>PROD / PLANIFIÉ PROD</b> ·
+        tout le reste → <b>HORS PROD</b> · Les commandes <b>PROD de personnes non planifiées</b> ne sont pas comptées ·
+        SANS CHOIX = Planifié − total des menus (inclut les « Je ne serai pas présent ») ·
+        <b>Absence prévue</b> : se règle dans chaque jour, appliquée uniquement à <b>PROD</b> ·
+        Planifié HORS PROD = « Prestataires (Hors Planning) » de la page <b>Effectifs</b>.</p>
       <details open>
-        <summary>🗂️ Correspondance Préfixe matricule → Entité</summary>
+        <summary>🗂️ Correspondance Préfixe matricule → Entité (automatique)</summary>
         <input type="text" id="map-search" placeholder="🔍 Filtrer les préfixes…" class="mt">
         <div id="out-mapping"></div>
       </details>
       <div class="toolbar" style="margin-top:14px">
         <button class="btn primary" id="btn-p6">🍽️ Calculer le récapitulatif</button>
         <button class="btn accent" id="btn-exp-p6">📥 Excel</button>
+        <button class="btn" id="btn-pdf-p6">🖨️ PDF</button>
       </div>
-      <div id="out-p6"><div class="hint">Importez Planning + Commandes, vérifiez la correspondance, puis calculez.</div></div>
+      <div id="out-p6"><div class="hint">Effectifs (avec prestataires) + Commandes importés → puis « Calculer le récapitulatif ».</div></div>
     </div>
   </section>
 
