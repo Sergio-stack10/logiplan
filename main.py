@@ -6,14 +6,15 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 
 JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
-COLONNES_OBLIGATOIRES = ['TRANSPORT', 'WORKDAY ID', 'Paid ID', 'Nom', 'Projet', 'Statut']
+BASE_COLS = ['TRANSPORT', 'WORKDAY ID', 'Paid ID', 'Nom', 'Projet', 'Statut']
+COLONNES_OBLIGATOIRES = BASE_COLS
 ENTITES = ["PRESTA", "SUPPORT + SAI", "PROD / PLANIFIÉ PROD", "AUTRE / IGNORÉ"]
 ENTITES_MAIN = ENTITES[:3]
 ENTITY_COLORS = {"PRESTA": "#4472C4", "SUPPORT + SAI": "#1F9AA8",
                  "PROD / PLANIFIÉ PROD": "#548235", "AUTRE / IGNORÉ": "#7F7F7F"}
 DATA_FILE = 'logiplan_state.pkl'
 
-# ================= ETAT (persisté dans un fichier) =================
+# ================= ÉTAT PERSISTANT =================
 def load_state():
     if os.path.exists(DATA_FILE):
         try:
@@ -39,7 +40,15 @@ def planning_valide(df):
     return (isinstance(df, pd.DataFrame) and not df.empty
             and all(c in df.columns for c in COLONNES_OBLIGATOIRES))
 
-# ================= FONCTIONS UTILITAIRES (reprises de LogiPlan) =================
+def current_data():
+    week = STATE.get('current_week')
+    pl = STATE['plannings'].get(week)
+    cmd = STATE['commandes'].get(week)
+    if not planning_valide(pl): pl = None
+    if not isinstance(cmd, pd.DataFrame) or cmd.empty: cmd = None
+    return week, pl, cmd
+
+# ================= FONCTIONS UTILITAIRES (logique Streamlit, inchangée) =================
 def is_planned(val):
     if pd.isna(val) or isinstance(val, bool): return False
     if isinstance(val, (int, float, np.number)): return val > 0
@@ -158,7 +167,6 @@ def normalize_entity(raw):
     return "AUTRE / IGNORÉ"
 
 def build_entity_seed(cmd_df):
-    """Table Préfixe -> Entité proposée depuis la colonne « Departement » du fichier commande."""
     seed = {}
     try:
         if cmd_df is not None and not cmd_df.empty:
@@ -174,7 +182,7 @@ def build_entity_seed(cmd_df):
                     seed = tmp.groupby("prefix")["ent"].agg(lambda x: x.mode().iloc[0]).to_dict()
     except Exception:
         pass
-    seed["SA"] = "SUPPORT + SAI"   # SI(GAUCHE(matricule;2)="SA";"SUPPORT";...)
+    seed["SA"] = "SUPPORT + SAI"
     return seed
 
 def derive_week_dates(week_key):
@@ -195,8 +203,6 @@ def derive_week_dates(week_key):
     return {}
 
 def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, taux_default):
-    """Logique Recap : entité par préfixe matricule ; SANS CHOIX = planifiés sans commande
-    + « Je ne serai pas présent » ; A preparer = Nombres × (1 − taux)."""
     melted = pd.DataFrame()
     if cmd_df is not None and not cmd_df.empty:
         day_cols = [j for j in jours if j in cmd_df.columns]
@@ -262,7 +268,39 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
         day_totals[j] = sum(recap[(j, e)]["total_prep"] for e in ENTITES_MAIN)
     return recap, day_totals
 
-# ================= PARSING (repris de LogiPlan, adaptés à des bytes) =================
+# ================= SÉRIALISATION ROBUSTE (correctif n°1) =================
+def jsonable(v):
+    """Convertit TOUS les types pandas/numpy/datetime en JSON sûr. Ne lève jamais d'erreur."""
+    try:
+        if v is None or v is pd.NaT: return None
+        if isinstance(v, bool): return bool(v)
+        if isinstance(v, int): return int(v)
+        if isinstance(v, float): return None if v != v else float(v)
+        if isinstance(v, str): return v
+        if isinstance(v, np.bool_): return bool(v)
+        if isinstance(v, np.integer): return int(v)
+        if isinstance(v, np.floating):
+            f = float(v); return None if f != f else f
+        if isinstance(v, datetime.time): return v.strftime('%H:%M')
+        if isinstance(v, datetime.timedelta): return str(v)
+        if isinstance(v, (datetime.datetime, pd.Timestamp)):
+            return None if pd.isna(v) else str(v)
+        try:
+            if pd.isna(v): return None
+        except Exception: pass
+        return str(v)
+    except Exception:
+        return None
+
+def df_payload(df):
+    if df is None: return {'columns': [], 'rows': []}
+    cols = [str(c) for c in df.columns]
+    rows = []
+    for rec in df.to_dict('records'):
+        rows.append({str(c): jsonable(v) for c, v in rec.items()})
+    return {'columns': cols, 'rows': rows}
+
+# ================= PARSING (logique Streamlit, adaptée aux bytes) =================
 def get_week_number(data, engine):
     try:
         xls = pd.ExcelFile(io.BytesIO(data), engine=engine)
@@ -301,11 +339,7 @@ def parse_planning(sources, jours):
             df = df.iloc[:, cols]
         else:
             continue
-        new_cols = ['TRANSPORT', 'WORKDAY ID', 'Paid ID', 'Nom', 'Projet', 'Statut',
-                    'Lundi_DE', 'Lundi_A', 'Lundi_Pause', 'Mardi_DE', 'Mardi_A', 'Mardi_Pause',
-                    'Mercredi_DE', 'Mercredi_A', 'Mercredi_Pause', 'Jeudi_DE', 'Jeudi_A', 'Jeudi_Pause',
-                    'Vendredi_DE', 'Vendredi_A', 'Vendredi_Pause', 'Samedi_DE', 'Samedi_A', 'Samedi_Pause',
-                    'Dimanche_DE', 'Dimanche_A', 'Dimanche_Pause']
+        new_cols = BASE_COLS + [f'{j}{s}' for j in jours for s in ('_DE', '_A', '_Pause')]
         df.columns = new_cols
         df['WORKDAY ID'] = df['WORKDAY ID'].astype(str).str.replace(" ", "").str.replace(".0", "").str.upper()
         df['Paid ID'] = df['Paid ID'].astype(str).str.replace(" ", "").str.upper()
@@ -365,26 +399,118 @@ def parse_reference(src_bytes):
     df = df[~df[wd_col].isin(['NAN', 'NONE', '*', ''])]
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
-# ================= SÉRIALISATION JSON =================
-def jsonable(v):
-    if v is None: return None
-    if isinstance(v, datetime.time): return v.strftime('%H:%M')
-    if isinstance(v, (datetime.datetime, pd.Timestamp)): return str(v)
-    if isinstance(v, np.integer): return int(v)
-    if isinstance(v, (np.floating, float)):
-        try: return None if np.isnan(v) else float(v)
-        except Exception: return None
-    if v is pd.NaT: return None
-    return v
+# ================= CONSTRUCTEURS PARTAGÉS (page + export utilisent la MÊME logique) =================
+def _apply_filters(pl):
+    """Filtres serveur : transport, projet, statut + recherche globale (Workday/Paid/Nom)."""
+    out = pl.copy()
+    for col, key in (('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')):
+        v = (request.args.get(key) or '').strip()
+        if v: out = out[out[col].astype(str) == v]
+    q = (request.args.get('q') or '').strip()
+    if q:
+        ql = q.lower()
+        mask = out[BASE_COLS[1:4]].astype(str).apply(lambda r: any(ql in str(v).lower() for v in r), axis=1)
+        out = out[mask]
+    return out
 
-def df_payload(df):
-    rows = [{c: jsonable(v) for c, v in rec.items()} for rec in df.to_dict('records')]
-    return {'columns': list(df.columns), 'rows': rows}
+def build_pivot(pl, taux, prest):
+    pivot = pl.pivot_table(index='Projet', values=[f'{j}_Flag' for j in JOURS], aggfunc='sum', fill_value=0)
+    pivot = pivot[[f'{j}_Flag' for j in JOURS]]; pivot.columns = JOURS
+    pivot.loc['Total Théorique'] = pivot.sum()
+    pivot.loc[f'Total Estimé (-{int(taux)}%)'] = (pivot.loc['Total Théorique'] * (1 - taux / 100)).round(0)
+    pivot.loc['Prestataires (Hors Planning)'] = prest
+    pivot.loc['Total à commander'] = pivot.loc[f'Total Estimé (-{int(taux)}%)'] + pivot.loc['Prestataires (Hors Planning)']
+    return pivot
 
-def current_data():
-    week = STATE.get('current_week')
-    pl = STATE['plannings'].get(week)
-    return week, (pl if planning_valide(pl) else None), STATE['commandes'].get(week)
+def build_shifts(pl):
+    shift_rows = []
+    for _, row in pl.iterrows():
+        for j in JOURS:
+            de = get_time_obj(row[f'{j}_DE'])
+            if de:
+                shift_rows.append({'Workday ID': row['WORKDAY ID'], 'Nom': row['Nom'], 'Projet': row['Projet'],
+                                   'Transport': row['TRANSPORT'], 'Jour': j, 'Shift (Début)': de.strftime('%H:%M')})
+    df = pd.DataFrame(shift_rows)
+    if df.empty: return None, None
+    pivot = df.pivot_table(index='Shift (Début)', columns='Jour', values='Nom', aggfunc='count', fill_value=0)
+    pivot = pivot.reindex(columns=JOURS, fill_value=0)
+    pivot['Total Semaine'] = pivot.sum(axis=1); pivot.loc['Total'] = pivot.sum()
+    return pivot, df.sort_values(by=['Jour', 'Shift (Début)', 'Nom'])
+
+def build_slots_peaks(pl):
+    hours = [f"{h:02d}:00" for h in range(24)]
+    slots = pd.DataFrame(0, index=hours, columns=JOURS)
+    ph = {}
+    for _, row in pl.iterrows():
+        projet = str(row['Projet'])
+        ph.setdefault(projet, {j: {h: 0 for h in range(24)} for j in JOURS})
+        for di, j in enumerate(JOURS):
+            de, a = get_time_obj(row[f'{j}_DE']), get_time_obj(row[f'{j}_A'])
+            pause = get_pause_start(row[f'{j}_Pause'])
+            for off, h in calculate_slots(de, a, pause):
+                tgt = JOURS[(di + off) % 7]
+                slots.loc[f"{h:02d}:00", tgt] += 1
+                ph[projet][tgt][h] += 1
+    slots['Total Jour'] = slots.sum(axis=1)
+    slots.loc['Total par Créneau'] = slots.sum(axis=0)
+    if ph:
+        peaks = pd.DataFrame([{'Projet': p, **{j: (max(d[j].values()) if d[j].values() else 0) for j in JOURS}}
+                              for p, d in ph.items()]).set_index('Projet')
+        peaks.loc['Pic Global (Tous Projets)'] = peaks[JOURS].sum().to_dict()
+    else:
+        peaks = pd.DataFrame(columns=JOURS)
+    return slots.rename_axis('Créneau'), peaks
+
+def build_conf(pl, cmd):
+    merged = pd.merge(pl, cmd, on='Paid ID', how='outer')
+    display_rows = []
+    for _, row in merged.iterrows():
+        has_planning = not pd.isna(row.get('Nom', np.nan))
+        display_row = {'Workday ID': row['WORKDAY ID'] if has_planning else "", 'Paid ID': row['Paid ID'],
+                       'Nom': row['Nom'] if has_planning else "", 'Projet': row['Projet'] if has_planning else "",
+                       'Statut': row['Statut'] if has_planning else ""}
+        for j in JOURS:
+            if has_planning:
+                planning_str = get_planning_status(row[f'{j}_DE'], row[f'{j}_A'])
+            else:
+                planning_str = "hors planning" if j in row and not pd.isna(row[j]) and str(row[j]).strip() not in ['*', ''] else ""
+            cmd_str = row[j] if j in row and not pd.isna(row[j]) else ""
+            if str(cmd_str).strip() in ['*', '']: cmd_str = ""
+            display_row[f'{j} - Planning'] = planning_str
+            display_row[f'{j} - Commande'] = cmd_str
+        display_rows.append(display_row)
+    return pd.DataFrame(display_rows)
+
+def build_anomalies(conf):
+    anomalies = []
+    for _, row in conf.iterrows():
+        for j in JOURS:
+            plan_val = str(row[f'{j} - Planning']).strip(); cmd_val = str(row[f'{j} - Commande']).strip()
+            absence = is_absence_command(cmd_val)
+            if plan_val == "Planifié" and (cmd_val == "" or absence):
+                anomalies.append({'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j,
+                                  "Type d'anomalie": "Planifié sans commande", 'Commande': cmd_val if cmd_val else "Aucune"})
+            elif plan_val != "Planifié" and cmd_val != "" and not absence:
+                anomalies.append({'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j,
+                                  "Type d'anomalie": "Non planifié avec commande", 'Commande': cmd_val})
+    return pd.DataFrame(anomalies)
+
+def excel_bytes(df, sheet='Data', index=False):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        df.to_excel(w, index=index, sheet_name=sheet[:31])
+    buf.seek(0); return buf
+
+def excel_multi(sheets):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        for name, df in sheets.items():
+            df.to_excel(w, index=False, sheet_name=name[:31])
+    buf.seek(0); return buf
+
+def dl(buf, filename):
+    return send_file(buf, download_name=filename,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 # ================= ROUTES =================
 @app.get('/')
@@ -395,19 +521,19 @@ def index():
 def api_state():
     weeks = sorted(STATE['plannings'].keys())
     cur = STATE.get('current_week')
-    if cur not in weeks and weeks: cur = weeks[-1]; STATE['current_week'] = cur; save_state()
+    if cur not in weeks and weeks:
+        cur = weeks[-1]; STATE['current_week'] = cur; save_state()
+    _, pl, cmd = current_data()
     return {'weeks': weeks, 'current_week': cur,
-            'has_commande': bool(STATE['commandes'].get(cur) is not None),
-            'has_reference': STATE.get('reference') is not None}
+            'has_planning': pl is not None, 'has_commande': cmd is not None,
+            'has_reference': isinstance(STATE.get('reference'), pd.DataFrame)}
 
 @app.post('/api/import')
 def api_import():
     planning_files = request.files.getlist('planning')
     if not planning_files:
         return jsonify({'error': "Aucun fichier planning fourni"}), 400
-    sources = []
-    for f in planning_files:
-        sources.append((f.read(), 'pyxlsb' if f.filename.endswith('.xlsb') else None))
+    sources = [(f.read(), 'pyxlsb' if f.filename.endswith('.xlsb') else None) for f in planning_files]
     week = (request.form.get('week') or '').strip()
     if not week:
         for data, engine in sources:
@@ -416,12 +542,16 @@ def api_import():
         if not week: week = f"S{datetime.datetime.now().isocalendar().week:02d}"
     planning_df = parse_planning(sources, JOURS)
     if not planning_valide(planning_df):
-        return jsonify({'error': "Aucun planning exploitable (feuille « Tout (WFO+WFH) » ou « TMM » attendue). Rien n'a été enregistré."}), 400
+        return jsonify({'error': "Aucun planning exploitable (feuille « Tout (WFO+WFH) » ou « TMM » attendue)."}), 400
     warnings = []
+    prev_map = STATE['calculs'].get(week, {}).get('mapping')
     STATE['plannings'][week] = planning_df
+    STATE['calculs'][week] = {}
+    if prev_map: STATE['calculs'][week]['mapping'] = prev_map
     cmd_f = request.files.get('commande')
     if cmd_f:
-        try: STATE['commandes'][week] = parse_commande(cmd_f.read(), JOURS)
+        try:
+            STATE['commandes'][week] = parse_commande(cmd_f.read(), JOURS)
         except Exception as e:
             STATE['commandes'][week] = None; warnings.append(f"Commandes illisible : {e}")
     else:
@@ -434,7 +564,6 @@ def api_import():
         elif ref is not None:
             STATE['reference'] = ref
     STATE['current_week'] = week
-    STATE['calculs'].setdefault(week, {})
     save_state()
     cmd = STATE['commandes'].get(week)
     return {'ok': True, 'week': week, 'n_planifiees': len(planning_df),
@@ -454,150 +583,115 @@ def api_delete_week():
     STATE['current_week'] = next(iter(sorted(STATE['plannings'])), None)
     save_state(); return {'ok': True}
 
+# ---------- PAGE 1 : planning regroupé (ordre de colonnes identique au Streamlit) ----------
 @app.get('/api/page1')
 def api_page1():
     week, pl, _ = current_data()
-    if pl is None: return {'columns': [], 'rows': [], 'options': {}, 'week': week}
-    disp = pl.copy()
+    if pl is None:
+        return {'columns': [], 'rows': [], 'options': {}, 'week': week, 'total': 0, 'shown': 0}
+    cols = BASE_COLS + [f'{j}{s}' for j in JOURS for s in ('_DE', '_A', '_Pause', '_Flag')]
+    cols = [c for c in cols if c in pl.columns]
+    disp = pl[cols].copy()
     for j in JOURS:
-        for suf in ['_DE', '_A', '_Pause']:
-            c = f'{j}{suf}'
-            if c in disp.columns: disp[c] = disp[c].apply(format_time_display)
-    p = df_payload(disp)
-    p['options'] = {c: sorted(disp[c].astype(str).unique().tolist()) for c in ['TRANSPORT', 'Projet', 'Statut']}
-    p['week'] = week
+        for suf in ('_DE', '_A', '_Pause'):
+            disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
+        disp[f'{j}_Flag'] = pd.to_numeric(disp[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
+    filtered = _apply_filters(disp)
+    p = df_payload(filtered)
+    p['options'] = {c: sorted(pl[c].astype(str).unique().tolist()) for c in ('TRANSPORT', 'Projet', 'Statut')}
+    p['week'] = week; p['total'] = len(disp); p['shown'] = len(filtered)
     return p
 
 @app.get('/api/export_page1')
 def api_export_page1():
     _, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
-    buf = io.BytesIO()
-    pl.to_excel(buf, index=False, sheet_name='Planning')
-    buf.seek(0)
-    return send_file(buf, download_name='planning_regroupé.xlsx',
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    cols = BASE_COLS + [f'{j}{s}' for j in JOURS for s in ('_DE', '_A', '_Pause', '_Flag')]
+    disp = pl[[c for c in cols if c in pl.columns]].copy()
+    for j in JOURS:
+        for suf in ('_DE', '_A', '_Pause'):
+            disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
+    return dl(excel_bytes(_apply_filters(disp)), 'planning_regroupé.xlsx')
 
-def _filtered_planning():
-    _, pl, _ = current_data()
-    if pl is None: return None
-    out = pl.copy()
-    for col, key in [('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')]:
-        v = (request.args.get(key) or '').strip()
-        if v: out = out[out[col].astype(str) == v]
-    return out
-
+# ---------- PAGE 2 ----------
 @app.get('/api/page2')
 def api_page2():
-    pl = _filtered_planning()
-    if pl is None: return {'columns': [], 'rows': [], 'metrics': {}}
+    _, pl, _ = current_data()
+    if pl is None: return {'rows': [], 'metrics': {}}
+    pl = _apply_filters(pl)
+    if pl.empty: return {'rows': [], 'metrics': {j: 0 for j in JOURS}}
     taux = float(request.args.get('taux', 0) or 0)
-    pivot = pl.pivot_table(index='Projet', values=[f'{j}_Flag' for j in JOURS], aggfunc='sum', fill_value=0)
-    pivot = pivot[[f'{j}_Flag' for j in JOURS]]; pivot.columns = JOURS
-    pivot.loc['Total Théorique'] = pivot.sum()
-    pivot.loc[f'Total Estimé (-{taux:.0f}%)'] = (pivot.loc['Total Théorique'] * (1 - taux / 100)).round(0)
     prest = [int(float(request.args.get(f'prest_{j}', 0) or 0)) for j in JOURS]
-    pivot.loc['Prestataires (Hors Planning)'] = prest
-    pivot.loc['Total à commander'] = pivot.loc[f'Total Estimé (-{taux:.0f}%)'] + pivot.loc['Prestataires (Hors Planning)']
+    pivot = build_pivot(pl, taux, prest)
     p = df_payload(pivot.reset_index())
-    p['metrics'] = {j: int(pivot.loc['Total à commander', j]) for j in JOURS}
+    p['metrics'] = {j: int(round(float(pivot.loc['Total à commander', j]))) for j in JOURS}
     return p
 
+@app.get('/api/export_page2')
+def api_export_page2():
+    _, pl, _ = current_data()
+    if pl is None: return jsonify({'error': 'Aucun planning'}), 400
+    pl = _apply_filters(pl)
+    taux = float(request.args.get('taux', 0) or 0)
+    prest = [int(float(request.args.get(f'prest_{j}', 0) or 0)) for j in JOURS]
+    return dl(excel_bytes(build_pivot(pl, taux, prest).reset_index()), 'effectifs.xlsx')
+
+# ---------- PAGE 3 ----------
 @app.get('/api/page3')
 def api_page3():
-    pl = _filtered_planning()
-    if pl is None: return {'pivot': {'columns': [], 'rows': []}, 'detail': {'columns': [], 'rows': []}}
-    shift_rows = []
-    for _, row in pl.iterrows():
-        for j in JOURS:
-            de = get_time_obj(row[f'{j}_DE'])
-            if de:
-                shift_rows.append({'Workday ID': row['WORKDAY ID'], 'Nom': row['Nom'], 'Projet': row['Projet'],
-                                   'Transport': row['TRANSPORT'], 'Jour': j, 'Shift (Début)': de.strftime('%H:%M')})
-    df_shifts = pd.DataFrame(shift_rows)
-    if df_shifts.empty:
-        return {'pivot': {'columns': [], 'rows': []}, 'detail': {'columns': [], 'rows': []}}
-    pivot = df_shifts.pivot_table(index='Shift (Début)', columns='Jour', values='Nom', aggfunc='count', fill_value=0)
-    pivot = pivot.reindex(columns=JOURS, fill_value=0)
-    pivot['Total Semaine'] = pivot.sum(axis=1); pivot.loc['Total'] = pivot.sum()
-    return {'pivot': df_payload(pivot.reset_index()),
-            'detail': df_payload(df_shifts.sort_values(by=['Jour', 'Shift (Début)', 'Nom']))}
+    _, pl, _ = current_data()
+    empty = {'pivot': {'columns': [], 'rows': []}, 'detail': {'columns': [], 'rows': []}}
+    if pl is None: return empty
+    pivot, detail = build_shifts(_apply_filters(pl))
+    if pivot is None: return empty
+    return {'pivot': df_payload(pivot.reset_index()), 'detail': df_payload(detail)}
 
+@app.get('/api/export_page3')
+def api_export_page3():
+    _, pl, _ = current_data()
+    if pl is None: return jsonify({'error': 'Aucun planning'}), 400
+    pivot, detail = build_shifts(_apply_filters(pl))
+    if pivot is None: return jsonify({'error': 'Aucun shift trouvé'}), 400
+    return dl(excel_multi({'Resume': pivot.reset_index(), 'Detail': detail}), 'shifts.xlsx')
+
+# ---------- PAGE 4 ----------
 @app.get('/api/page4')
 def api_page4():
-    pl = _filtered_planning()
+    _, pl, _ = current_data()
     if pl is None: return {'peaks': {'columns': [], 'rows': []}, 'slots': {'columns': [], 'rows': []}}
-    hours = [f"{h:02d}:00" for h in range(24)]
-    pivot_slots = pd.DataFrame(0, index=hours, columns=JOURS)
-    project_hourly = {}
-    for _, row in pl.iterrows():
-        projet = row['Projet']
-        project_hourly.setdefault(projet, {j: {h: 0 for h in range(24)} for j in JOURS})
-        for day_idx, j in enumerate(JOURS):
-            de, a = get_time_obj(row[f'{j}_DE']), get_time_obj(row[f'{j}_A'])
-            pause = get_pause_start(row[f'{j}_Pause'])
-            for offset, hour in calculate_slots(de, a, pause):
-                target = JOURS[(day_idx + offset) % 7]
-                pivot_slots.loc[f"{hour:02d}:00", target] += 1
-                project_hourly[projet][target][hour] += 1
-    pivot_slots['Total Jour'] = pivot_slots.sum(axis=1)
-    pivot_slots.loc['Total par Créneau'] = pivot_slots.sum(axis=0)
-    peak_data = [{'Projet': proj, **{j: (max(d[j].values()) if d[j].values() else 0) for j in JOURS}}
-                 for proj, d in project_hourly.items()]
-    df_peaks = pd.DataFrame(peak_data).set_index('Projet')
-    df_peaks.loc['Pic Global (Tous Projets)'] = df_peaks[JOURS].sum().to_dict()
-    return {'peaks': df_payload(df_peaks.reset_index()), 'slots': df_payload(pivot_slots.reset_index())}
+    slots, peaks = build_slots_peaks(_apply_filters(pl))
+    return {'peaks': df_payload(peaks.reset_index()), 'slots': df_payload(slots.reset_index())}
 
+@app.get('/api/export_page4')
+def api_export_page4():
+    _, pl, _ = current_data()
+    if pl is None: return jsonify({'error': 'Aucun planning'}), 400
+    slots, peaks = build_slots_peaks(_apply_filters(pl))
+    return dl(excel_multi({'Pics': peaks.reset_index(), 'Creneaux': slots.reset_index()}), 'creneaux_pics.xlsx')
+
+# ---------- PAGE 5 ----------
 @app.post('/api/page5')
 def api_page5():
     week, pl, cmd = current_data()
-    if pl is None: return jsonify({'error': "Chargez d'abord un planning (Page 1)."}), 400
+    if pl is None: return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
     if cmd is None: return jsonify({'error': "Importez le fichier Commandes dans la barre latérale."}), 400
-    merged = pd.merge(pl, cmd, on='Paid ID', how='outer')
-    display_rows = []
-    for _, row in merged.iterrows():
-        has_planning = not pd.isna(row.get('Nom', np.nan))
-        display_row = {'Workday ID': row['WORKDAY ID'] if has_planning else "", 'Paid ID': row['Paid ID'],
-                       'Nom': row['Nom'] if has_planning else "", 'Projet': row['Projet'] if has_planning else "",
-                       'Statut': row['Statut'] if has_planning else ""}
-        for j in JOURS:
-            if has_planning:
-                planning_str = get_planning_status(row[f'{j}_DE'], row[f'{j}_A'])
-            else:
-                planning_str = "hors planning" if j in row and not pd.isna(row[j]) and str(row[j]).strip() not in ['*', ''] else ""
-            cmd_str = row[j] if j in row and not pd.isna(row[j]) else ""
-            if str(cmd_str).strip() in ['*', '']: cmd_str = ""
-            display_row[f'{j} - Planning'] = planning_str
-            display_row[f'{j} - Commande'] = cmd_str
-        display_rows.append(display_row)
-    conf_df = pd.DataFrame(display_rows)
-    STATE['calculs'].setdefault(week, {})['conf'] = conf_df
+    conf = build_conf(pl, cmd)
+    STATE['calculs'].setdefault(week, {})['conf'] = conf
     save_state()
-    return df_payload(conf_df)
+    return df_payload(conf)
 
-@app.post('/api/page7')
-def api_page7():
-    week = STATE.get('current_week')
-    conf = STATE['calculs'].get(week, {}).get('conf')
-    if conf is None: return jsonify({'error': "Générez d'abord la confrontation (onglet 5)."}), 400
-    anomalies = []
-    for _, row in conf.iterrows():
-        for j in JOURS:
-            plan_val = str(row[f'{j} - Planning']).strip(); cmd_val = str(row[f'{j} - Commande']).strip()
-            absence = is_absence_command(cmd_val)
-            if plan_val == "Planifié" and (cmd_val == "" or absence):
-                anomalies.append({'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j,
-                                  "Type d'anomalie": "Planifié sans commande", 'Commande': cmd_val if cmd_val else "Aucune"})
-            elif plan_val != "Planifié" and cmd_val != "" and not absence:
-                anomalies.append({'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j,
-                                  "Type d'anomalie": "Non planifié avec commande", 'Commande': cmd_val})
-    return df_payload(pd.DataFrame(anomalies))
+@app.post('/api/export_conf')
+def api_export_conf():
+    conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
+    if conf is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
+    return dl(excel_bytes(conf), 'confrontation.xlsx')
 
+# ---------- PAGE 6 : Recap ----------
 @app.get('/api/prefixes')
 def api_prefixes():
     week, pl, cmd = current_data()
     ids = set()
-    if cmd is not None and not cmd.empty: ids |= set(cmd['Paid ID'].astype(str))
+    if cmd is not None: ids |= set(cmd['Paid ID'].astype(str))
     if pl is not None: ids |= set(pl['Paid ID'].astype(str))
     prefixes = sorted({get_prefix(i) for i in ids if i and i.strip() and i.upper() not in ('NAN', 'NONE')})
     seed = build_entity_seed(cmd if cmd is not None else pd.DataFrame())
@@ -609,15 +703,15 @@ def api_prefixes():
 def _recap_compute(mapping, taux, presta):
     week, pl, cmd = current_data()
     t = {e: float(taux.get(e, 5)) for e in ENTITES_MAIN}
-    recap, day_totals = compute_recap_menus(pl, cmd, mapping or {}, JOURS, t, t.get('PROD / PLANIFIÉ PROD', 5))
-    return week, pl, recap, day_totals
+    return week, pl, cmd, *compute_recap_menus(pl, cmd, mapping or {}, JOURS, t, t.get('PROD / PLANIFIÉ PROD', 5))
 
 @app.post('/api/recap')
 def api_recap():
     body = request.get_json(force=True)
-    mapping = body.get('mapping') or {}; taux = body.get('taux') or {}; presta = body.get('presta_prevus') or {}
-    week, pl, recap, day_totals = _recap_compute(mapping, taux, presta)
-    if STATE.get('current_week'):
+    mapping, taux, presta = body.get('mapping') or {}, body.get('taux') or {}, body.get('presta_prevus') or {}
+    week, pl, cmd, recap, day_totals = _recap_compute(mapping, taux, presta)
+    if cmd is None: return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes."}), 400
+    if week:
         STATE['calculs'].setdefault(week, {})['mapping'] = mapping
         save_state()
     dates = derive_week_dates(week)
@@ -658,16 +752,38 @@ def api_recap():
 @app.post('/api/export_recap')
 def api_export_recap():
     body = request.get_json(force=True)
-    mapping = body.get('mapping') or {}; taux = body.get('taux') or {}; presta = body.get('presta_prevus') or {}
-    week, pl, recap, _ = _recap_compute(mapping, taux, presta)
+    week, pl, cmd, recap, _ = _recap_compute(body.get('mapping') or {}, body.get('taux') or {}, body.get('presta_prevus') or {})
+    if cmd is None: return jsonify({'error': "Aucune commande disponible."}), 400
     export_rows = [{'Jour': j, 'Entité': ent, 'Choix': r['Choix'], 'Nombres': r['Nombres'],
                     'Pourcentage (%)': round(float(r['Pourcentage']), 1), 'A preparer': r['A preparer']}
                    for j in JOURS for ent in ENTITES for _, r in recap[(j, ent)]['df'].iterrows()]
-    buf = io.BytesIO()
-    pd.DataFrame(export_rows).to_excel(buf, index=False, sheet_name='Recap')
-    buf.seek(0)
-    return send_file(buf, download_name='recap_commandes_menus.xlsx',
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    return dl(excel_bytes(pd.DataFrame(export_rows), 'Recap'), 'recap_commandes_menus.xlsx')
+
+# ---------- PAGE 7 ----------
+@app.post('/api/page7')
+def api_page7():
+    conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
+    if conf is None: return jsonify({'error': "Générez d'abord la confrontation (onglet 5)."}), 400
+    return df_payload(build_anomalies(conf))
+
+@app.post('/api/export_anom')
+def api_export_anom():
+    conf = STATE['calculs'].get(STATE.get('current_week'), {}).get('conf')
+    if conf is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
+    return dl(excel_bytes(build_anomalies(conf)), 'anomalies_commande.xlsx')
+
+@app.get('/api/matricules')
+def api_matricules():
+    week, pl, _ = current_data()
+    if pl is None: return jsonify({'error': "Chargez d'abord un planning."}), 400
+    ref = STATE.get('reference')
+    if not isinstance(ref, pd.DataFrame):
+        return jsonify({'error': "Importez le fichier « Liste Actif » dans la barre latérale."}), 400
+    check = pd.merge(pl[['WORKDAY ID', 'Paid ID', 'Nom', 'Projet']], ref[['WORKDAY ID', 'REF_PAID_ID']],
+                     on='WORKDAY ID', how='left')
+    mismatch = check[(check['REF_PAID_ID'].notna()) & (check['Paid ID'].astype(str) != check['REF_PAID_ID'].astype(str))]
+    notfound = check[check['REF_PAID_ID'].isna()]
+    return {'mismatch': df_payload(mismatch), 'notfound': df_payload(notfound)}
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
