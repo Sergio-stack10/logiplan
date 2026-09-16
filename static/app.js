@@ -269,6 +269,12 @@ function renderP5(){ if (p5Rows) $('#out-p5').innerHTML = confTable(searchRows(p
 
 /* ---------- PAGE 6 : Recap ---------- */
 let mappingSel = {};
+const tauxByDay = Object.fromEntries(JOURS.map(j => [j, parseFloat($('#inp-taux').value) || 0]));
+ $('#inp-taux').addEventListener('input', e => {
+  JOURS.forEach(j => tauxByDay[j] = parseFloat(e.target.value) || 0);
+  $$('#out-p6 [data-dtaux]').forEach(inp => inp.value = tauxByDay[inp.dataset.dtaux]);
+});
+
 async function loadPrefixes(){
   try {
     const d = await api('/api/prefixes');
@@ -292,49 +298,56 @@ async function loadPrefixes(){
   $$('#out-mapping .map-item').forEach(it => it.style.display = it.textContent.toLowerCase().includes(s) ? '' : 'none');
 }, 200));
 
-/* IDs indexés (jamais de nom d'entité dans un sélecteur CSS) */
- $('#p6-taux').innerHTML = ENTITES_MAIN.map((e, i) =>
-  `<label>${esc(e)} (%)<input type="number" id="t-${i}" min="0" max="50" step="0.5" value="${$('#inp-taux').value}"></label>`).join('');
- $('#p6-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="p6prest-${j}" min="0" value="0"></label>`).join('');
-
 function recapBody(){
   return {
     mapping: mappingSel,
-    taux: Object.fromEntries(ENTITES_MAIN.map((e, i) => [e, numVal('t-' + i)])),
-    presta_prevus: Object.fromEntries(JOURS.map(j => [j, intVal('p6prest-' + j)]))
+    taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]]))
   };
 }
+const RECAP_COLS = ['Choix','Nombres','Pourcentage','A preparer'];   // ordre verrouillé (point 1)
+const SUMMARY_COLS = ['Jour', ...ENTITES_MAIN, 'À commander'];       // sans « Presta. prévus » (point 2)
+
 function renderRecap(d){
-  let h = '<h3 class="sub">📈 Synthèse de la semaine (repas à préparer)</h3>' + tableHTML(d.summary_rows, {recap:true});
+  let h = '<h3 class="sub">📈 Synthèse de la semaine (repas à préparer)</h3>' +
+          tableHTML(orderedRows(d.summary_rows, SUMMARY_COLS), {recap:true});
   for (const day of d.day_order){
     const D = d.days[day];
     h += `<div class="day-card">
       <div class="day-header"><span>📅 ${esc(day)}${D.date ? ' · ' + esc(D.date) : ''}</span>
       <span class="dh-right">Semaine ${esc(d.week)}</span></div>
-      <div class="day-sub"><span class="big">À commander : <b>${D.a_commander}</b> repas</span>
-      <small>(dont ${D.presta} prestataire(s) prévu(s))</small><br>
-      À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix==='TOTAL')?.['A preparer'] ?? 0}</b>`).join(' &nbsp;•&nbsp; ')}</div>`;
+      <div class="day-sub" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:space-between">
+        <div><span class="big">À commander : <b>${D.a_commander}</b> repas</span><br>
+        À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix==='TOTAL')?.['A preparer'] ?? 0}</b>`).join(' &nbsp;•&nbsp; ')}</div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7c8a;font-weight:600;white-space:nowrap">
+          Absence prévue (%) — PROD
+          <input type="number" data-dtaux="${esc(day)}" min="0" max="50" step="0.5" value="${tauxByDay[day]}"
+            style="width:74px;padding:6px;border:1px solid #dde5ec;border-radius:8px;text-align:center">
+        </div>
+      </div>`;
     for (const E of D.entities){
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
         <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> · Réponses : <b>${E.reponses}</b> ·
         Absences déclarées : <b>${E.abs_n}</b> · SANS CHOIX : <b>${E.sans_choix}</b></div>
-        ${tableHTML(E.rows, {recap:true})}</div></div>`;
+        ${tableHTML(orderedRows(E.rows, RECAP_COLS), {recap:true})}</div></div>`;
     }
-    if (D.warn) h += `<div class="warn">⚠️ ${esc(D.warn)}</div>`;
     h += '</div>';
   }
   if (!d.has_planning) h = '<div class="msg warn">ℹ️ Planning non chargé : SANS CHOIX ne contient que les absences déclarées.</div>' + h;
   $('#out-p6').innerHTML = h;
+  // L'absence prévue se règle jour par jour → recalcul automatique après modification
+  $$('#out-p6 [data-dtaux]').forEach(inp => inp.addEventListener('change', () => {
+    tauxByDay[inp.dataset.dtaux] = parseFloat(inp.value) || 0;
+    calcP6();
+  }));
 }
- $('#btn-p6').addEventListener('click', async () => {
+async function calcP6(){
   busy($('#btn-p6'), true, 'Calcul…');
-  $('#out-p6').innerHTML = '<div class="hint">⏳ Calcul du récapitulatif en cours…</div>';
   try {
     renderRecap(await api('/api/recap', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(recapBody())}));
-    toast('Récapitulatif calculé');
   } catch(e){ $('#out-p6').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; toast(esc(e.message), 'err'); }
   busy($('#btn-p6'), false);
-});
+}
+ $('#btn-p6').addEventListener('click', calcP6);
 async function downloadPost(url, filename, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if (!r.ok){ const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Export impossible'); }
@@ -345,6 +358,7 @@ async function downloadPost(url, filename, body){
   try { await downloadPost('/api/export_recap', 'recap_commandes_menus.xlsx', recapBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
 });
+
 
 /* ---------- PAGE 7 : Anomalies (ordre verrouillé) ---------- */
 let p7Rows = null;
