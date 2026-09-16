@@ -227,48 +227,7 @@ function planTable(rows){
  $('#btn-exp-p4').addEventListener('click', () =>
   window.open('/api/export_page4?' + new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value}), '_blank'));
 
-/* ---------- PAGE 5 : Confrontation (jours en bandes groupées) ---------- */
-let p5Rows = null;
-function confTable(rows){
-  if (!rows || !rows.length) return '<div class="empty">Aucune donnée.</div>';
-  const base = ['Workday ID','Paid ID','Nom','Projet','Statut'];
-  let h = '<div class="tscroll"><table class="data conf"><thead>';
-  h += '<tr class="grp-row"><th colspan="5">👤 Identité</th>';
-  JOURS.forEach(j => h += `<th colspan="2">${j}</th>`);
-  h += '</tr><tr class="cols-row">';
-  base.forEach(c => h += `<th>${esc(c)}</th>`);
-  JOURS.forEach(() => h += '<th>Planning</th><th>Commande</th>');
-  h += '</tr></thead><tbody>';
-  rows.forEach(r => {
-    h += '<tr>' + base.map(c => `<td title="${esc(r[c])}">${esc(r[c])}</td>`).join('');
-    JOURS.forEach(j => {
-      const pl = String(r[j + ' - Planning'] ?? '');
-      const cm = String(r[j + ' - Commande'] ?? '');
-      const plCell = pl === 'Planifié' ? '<span class="badge b-ok">Planifié</span>'
-        : pl === 'hors planning' ? '<span class="badge b-warn">hors planning</span>'
-        : pl ? `<span class="badge b-info">${esc(pl)}</span>` : '';
-      const cmCell = cm ? (/JE NE SERAI PAS/i.test(cm) ? '<span class="badge b-abs">Je ne serai pas présent</span>' : `<span title="${esc(cm)}">${esc(cm)}</span>`) : '';
-      h += `<td>${plCell}</td><td>${cmCell}</td>`;
-    });
-    h += '</tr>';
-  });
-  return h + '</tbody></table></div>';
-}
-function renderP5(){ if (p5Rows) $('#out-p5').innerHTML = confTable(searchRows(p5Rows, $('#f5-search').value)); }
- $('#btn-p5').addEventListener('click', async () => {
-  busy($('#btn-p5'), true, 'Génération…');
-  try {
-    p5Rows = (await api('/api/page5', {method:'POST'})).rows;
-    renderP5();
-    toast('Confrontation générée : ' + p5Rows.length + ' lignes');
-  } catch(e){ toast(esc(e.message), 'err'); $('#out-p5').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
-  busy($('#btn-p5'), false);
-});
- $('#f5-search').addEventListener('input', debounce(renderP5, 250));
- $('#btn-exp-p5').addEventListener('click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
-
-/* ---------- PAGE 6 : Recap ---------- */
-let mappingSel = {};
+/* ---------- PAGE 6 : Recap (HORS PROD / PROD) ---------- */
 const tauxByDay = Object.fromEntries(JOURS.map(j => [j, parseFloat($('#inp-taux').value) || 0]));
  $('#inp-taux').addEventListener('input', e => {
   JOURS.forEach(j => tauxByDay[j] = parseFloat(e.target.value) || 0);
@@ -284,13 +243,10 @@ async function loadPrefixes(){
     }
     let h = '<div class="map-grid">';
     d.prefixes.forEach(p => {
-      mappingSel[p.prefix] = p.current;
-      h += `<div class="map-item"><span class="mono">« ${esc(p.prefix)}… »</span>
-        <select data-prefix="${esc(p.prefix)}">` +
-        d.entities.map(e => `<option${e===p.current?' selected':''}>${esc(e)}</option>`).join('') + '</select></div>';
+      h += `<div class="map-item"><span class="mono">« ${esc(p.prefix)} »</span>
+        <span class="badge ${p.entity === 'HORS PROD' ? 'b-info' : 'b-ok'}">${esc(p.entity)}</span></div>`;
     });
     $('#out-mapping').innerHTML = h + '</div>';
-    $$('#out-mapping select').forEach(s => s.addEventListener('change', e => mappingSel[e.target.dataset.prefix] = e.target.value));
   } catch(e){ $('#out-mapping').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
 }
  $('#map-search').addEventListener('input', debounce(() => {
@@ -298,18 +254,17 @@ async function loadPrefixes(){
   $$('#out-mapping .map-item').forEach(it => it.style.display = it.textContent.toLowerCase().includes(s) ? '' : 'none');
 }, 200));
 
-function recapBody(){
-  return {
-    mapping: mappingSel,
-    taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]]))
-  };
-}
-const RECAP_COLS = ['Choix','Nombres','Pourcentage','A preparer'];   // ordre verrouillé (point 1)
-const SUMMARY_COLS = ['Jour', ...ENTITES_MAIN, 'À commander'];       // sans « Presta. prévus » (point 2)
+function recapBody(){ return { taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]])) }; }
+
+const RECAP_COLS = ['Choix','Nombres','Pourcentage','À commander'];
+const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ PROD', 'À commander'];
 
 function renderRecap(d){
-  let h = '<h3 class="sub">📈 Synthèse de la semaine (repas à préparer)</h3>' +
-          tableHTML(orderedRows(d.summary_rows, SUMMARY_COLS), {recap:true});
+  let h = '';
+  if (!d.has_presta)
+    h += '<div class="msg warn">⚠️ Prestataires hors planning non renseignés : calculez d\'abord la page <b>Effectifs</b> (onglet 2, saisie « Prestataires hors planning »), sinon Planifié HORS PROD = 0.</div>';
+  h += '<h3 class="sub">📈 Synthèse de la semaine (repas à préparer)</h3>' +
+       tableHTML(orderedRows(d.summary_rows, SUMMARY_COLS), {recap:true});
   for (const day of d.day_order){
     const D = d.days[day];
     h += `<div class="day-card">
@@ -317,7 +272,7 @@ function renderRecap(d){
       <span class="dh-right">Semaine ${esc(d.week)}</span></div>
       <div class="day-sub" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:space-between">
         <div><span class="big">À commander : <b>${D.a_commander}</b> repas</span><br>
-        À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix==='TOTAL')?.['A preparer'] ?? 0}</b>`).join(' &nbsp;•&nbsp; ')}</div>
+        À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix==='TOTAL')?.['À commander'] ?? 0}</b>`).join(' &nbsp;•&nbsp; ')}</div>
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7c8a;font-weight:600;white-space:nowrap">
           Absence prévue (%) — PROD
           <input type="number" data-dtaux="${esc(day)}" min="0" max="50" step="0.5" value="${tauxByDay[day]}"
@@ -326,15 +281,14 @@ function renderRecap(d){
       </div>`;
     for (const E of D.entities){
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
-        <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> · Réponses : <b>${E.reponses}</b> ·
-        Absences déclarées : <b>${E.abs_n}</b> · SANS CHOIX : <b>${E.sans_choix}</b></div>
+        <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> ·
+        SANS CHOIX : <b>${E.sans_choix}</b> · Absences déclarées : <b>${E.abs_prevues}</b></div>
         ${tableHTML(orderedRows(E.rows, RECAP_COLS), {recap:true})}</div></div>`;
     }
     h += '</div>';
   }
-  if (!d.has_planning) h = '<div class="msg warn">ℹ️ Planning non chargé : SANS CHOIX ne contient que les absences déclarées.</div>' + h;
+  if (!d.has_planning) h += '<div class="msg warn">ℹ️ Planning non chargé : le planifié PROD vaut 0.</div>';
   $('#out-p6').innerHTML = h;
-  // L'absence prévue se règle jour par jour → recalcul automatique après modification
   $$('#out-p6 [data-dtaux]').forEach(inp => inp.addEventListener('change', () => {
     tauxByDay[inp.dataset.dtaux] = parseFloat(inp.value) || 0;
     calcP6();
@@ -348,6 +302,7 @@ async function calcP6(){
   busy($('#btn-p6'), false);
 }
  $('#btn-p6').addEventListener('click', calcP6);
+
 async function downloadPost(url, filename, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if (!r.ok){ const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Export impossible'); }
@@ -358,6 +313,45 @@ async function downloadPost(url, filename, body){
   try { await downloadPost('/api/export_recap', 'recap_commandes_menus.xlsx', recapBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
 });
+
+/* Export PDF : vue d'impression autonome (Enregistrer au format PDF) */
+ $('#btn-pdf-p6').addEventListener('click', () => {
+  const content = $('#out-p6').innerHTML;
+  if (!content || content.trim().startsWith('<div class="hint"')) { toast("Calculez d'abord le récapitulatif.", 'warn'); return; }
+  const w = window.open('', '_blank');
+  if (!w){ toast('Autorisez les fenêtres pop-up pour exporter en PDF.', 'err'); return; }
+  w.document.write(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<title>LogiPlan — Commandes par menu</title><style>
+body{font-family:'Segoe UI',Arial,sans-serif;color:#22333f;padding:24px;max-width:1100px;margin:0 auto}
+h1{color:#003D5B;font-size:20px;border-bottom:3px solid #25E2CC;padding-bottom:8px}
+h3{color:#003D5B;font-size:15px}
+table{border-collapse:collapse;width:100%;margin:6px 0;font-size:11.5px}
+th{background:#003D5B;color:#fff;padding:5px 8px;text-align:left}
+td{border:1px solid #dde5ec;padding:4px 8px}
+tbody tr:nth-child(odd) td{background:#f8fbfd}
+tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2px solid #003D5B}
+tr.sanschoix td{font-weight:700}
+.day-card{border:2px solid #003D5B;border-radius:12px;margin:14px 0;overflow:hidden;page-break-inside:avoid}
+.day-header{background:#003D5B;color:#fff;padding:9px 16px;font-weight:700;display:flex;justify-content:space-between;font-size:14px}
+.dh-right{font-weight:400;font-size:11px;opacity:.85}
+.day-sub{padding:8px 16px;background:#fbfdfe;border-bottom:1px solid #eef;font-size:12.5px}
+.day-sub b{color:#003D5B}
+.entity-row{display:flex;border-bottom:1px solid #eef}
+.entity-badge{color:#fff;font-weight:700;padding:6px 12px;min-width:135px;display:flex;align-items:center;font-size:11.5px}
+.entity-body{flex:1;padding:8px 12px}
+.entity-meta{font-size:10.5px;color:#6b7c8a;margin-bottom:4px}
+.entity-meta b{color:#003D5B}
+input{display:none}
+.msg{padding:8px 12px;border-radius:8px;font-size:12px;margin:8px 0;background:#fff3cd;color:#775500}
+@page{margin:12mm}
+</style></head><body>
+<h1>🍽️ LogiPlan — Commandes par menu · Semaine ${esc(d.week || '')}</h1>
+ ${content}
+<script>window.onload=function(){setTimeout(function(){window.print()},300)}<\/script>
+</body></html>`);
+  w.document.close();
+});
+
 
 
 /* ---------- PAGE 7 : Anomalies (ordre verrouillé) ---------- */
