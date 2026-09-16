@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogiPlan</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <h2>📊 LogiPlan</h2>
+  <h3>1. Importation des fichiers</h3>
+  <label>Fichiers Planning (Obligatoire)</label>
+  <input type="file" id="inp-planning" multiple accept=".xlsx,.xls,.xlsb">
+  <label>Fichier Commandes (Optionnel)</label>
+  <input type="file" id="inp-commande" accept=".xlsx">
+  <label>Fichier Liste Actif (Optionnel)</label>
+  <input type="file" id="inp-reference" accept=".xlsx">
+  <label>Nom de la semaine</label>
+  <input type="text" id="inp-week" placeholder="Ex: S38">
+  <button class="primary" id="btn-import">🚀 Lancer l'import et le regroupement</button>
+  <h3>2. Absentéisme global</h3>
+  <label>Estimation (%)</label>
+  <input type="range" id="inp-taux" min="0" max="30" value="5">
+  <span id="taux-val">5%</span>
+  <h3>3. Historique des semaines</h3>
+  <select id="sel-week"></select>
+  <button class="primary" id="btn-del-week">🗑️ Supprimer cette semaine</button>
+  <div id="sidebar-msg"></div>
+</aside>
+<main>
+  <h1>📊 LogiPlan</h1>
+  <nav id="tabs">
+    <button class="tab active" data-tab="p1">📄 1. Regroupement</button>
+    <button class="tab" data-tab="p2">📈 2. Effectifs</button>
+    <button class="tab" data-tab="p3">🚌 3. Par Shift</button>
+    <button class="tab" data-tab="p4">🕒 4. Par créneau</button>
+    <button class="tab" data-tab="p5">⚠️ 5. Confrontation</button>
+    <button class="tab" data-tab="p6">🍽️ 6. Commandes par menu</button>
+    <button class="tab" data-tab="p7">❌ 7. Anomalies</button>
+  </nav>
+
+  <section id="p1" class="panel active">
+    <div class="filters">
+      <select id="f1-transport"><option value="">Transport : tous</option></select>
+      <select id="f1-projet"><option value="">Projet : tous</option></select>
+      <select id="f1-statut"><option value="">Statut : tous</option></select>
+      <input type="text" id="f1-search" placeholder="🔍 Recherche...">
+      <button class="accent small" id="btn-exp-p1">📥 Télécharger Excel</button>
+    </div>
+    <div id="out-p1"></div>
+  </section>
+
+  <section id="p2" class="panel">
+    <div class="filters">
+      <select id="f2-projet"><option value="">Projet : tous</option></select>
+      <select id="f2-statut"><option value="">Statut : tous</option></select>
+      <button class="accent" id="btn-p2">Calculer</button>
+    </div>
+    <div class="presta-grid" id="p2-presta"></div>
+    <div class="metrics" id="p2-metrics"></div>
+    <div id="out-p2"></div>
+  </section>
+
+  <section id="p3" class="panel">
+    <div class="filters">
+      <select id="f3-transport"><option value="">Transport : tous</option></select>
+      <select id="f3-projet"><option value="">Projet : tous</option></select>
+      <select id="f3-statut"><option value="">Statut : tous</option></select>
+      <button class="accent" id="btn-p3">Calculer</button>
+    </div>
+    <div id="out-p3"></div>
+  </section>
+
+  <section id="p4" class="panel">
+    <div class="filters">
+      <select id="f4-projet"><option value="">Projet : tous</option></select>
+      <select id="f4-statut"><option value="">Statut : tous</option></select>
+      <button class="accent" id="btn-p4">Calculer</button>
+    </div>
+    <div id="out-p4"></div>
+  </section>
+
+  <section id="p5" class="panel">
+    <button class="accent" id="btn-p5">↔️ Générer la confrontation</button>
+    <input type="text" id="f5-search" placeholder="🔍 Recherche..." style="margin:10px 0">
+    <div id="out-p5"></div>
+  </section>
+
+  <section id="p6" class="panel">
+    <details open><summary>🗂️ Correspondance Préfixe matricule → Entité (règle : « SA » → SUPPORT + SAI)</summary>
+      <div id="out-mapping"></div>
+    </details>
+    <details><summary>📉 Taux d'absentéisme par entité (appliqué au « A preparer »)</summary>
+      <div class="presta-grid" id="p6-taux"></div>
+    </details>
+    <h3>👷 Prestataires prévus (ajoutés au total « à commander »)</h3>
+    <div class="presta-grid" id="p6-presta"></div>
+    <button class="accent" id="btn-p6">🍽️ Calculer le récapitulatif</button>
+    <button class="small" id="btn-exp-p6">📥 Télécharger Excel</button>
+    <div id="out-p6"></div>
+  </section>
+
+  <section id="p7" class="panel">
+    <button class="accent" id="btn-p7">⚠️ Extraire les anomalies</button>
+    <input type="text" id="f7-search" placeholder="🔍 Recherche..." style="margin:10px 0">
+    <div id="out-p7"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
