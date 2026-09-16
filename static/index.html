@@ -4,13 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LogiPlan</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23003D5B'/%3E%3Crect x='12' y='32' width='9' height='20' rx='2' fill='%2325E2CC'/%3E%3Crect x='27' y='20' width='9' height='32' rx='2' fill='%23ffffff'/%3E%3Crect x='42' y='12' width='9' height='40' rx='2' fill='%2325E2CC'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<aside id="sidebar">
-  <div class="brand"><span class="logo">📊</span><div><b>LogiPlan</b><small>Planning & Commandes cantine</small></div></div>
 
+<header class="topbar">
+  <button id="btn-side" class="hamb" title="Masquer / afficher le menu">☰</button>
+  <div class="brand"><span class="logo">📊</span> <b>LogiPlan</b></div>
+  <nav id="tabs">
+    <button class="tab active" data-tab="p1">📄 Regroupement</button>
+    <button class="tab" data-tab="p2">📈 Effectifs</button>
+    <button class="tab" data-tab="p3">🚌 Par Shift</button>
+    <button class="tab" data-tab="p4">🕒 Par créneau</button>
+    <button class="tab" data-tab="p5">⚠️ Confrontation</button>
+    <button class="tab" data-tab="p6">🍽️ Commandes par menu</button>
+    <button class="tab" data-tab="p7">❌ Anomalies</button>
+  </nav>
+  <span class="week-badge" id="week-badge">—</span>
+</header>
+
+<div class="layout">
+<aside id="sidebar">
   <h3>1 · Importation</h3>
   <label>Fichiers Planning (obligatoire)</label>
   <input type="file" id="inp-planning" multiple accept=".xlsx,.xls,.xlsb">
@@ -34,26 +49,11 @@
   <button class="btn danger-o" id="btn-del-week">🗑️ Supprimer cette semaine</button>
 
   <div id="sidebar-msg"></div>
-  <div class="side-foot">LogiPlan · Flask edition</div>
 </aside>
 
 <main>
-  <header class="topbar">
-    <h1>📊 LogiPlan</h1>
-    <span class="week-badge" id="week-badge">—</span>
-  </header>
-
-  <nav id="tabs">
-    <button class="tab active" data-tab="p1">📄 1 · Regroupement</button>
-    <button class="tab" data-tab="p2">📈 2 · Effectifs</button>
-    <button class="tab" data-tab="p3">🚌 3 · Par Shift</button>
-    <button class="tab" data-tab="p4">🕒 4 · Par créneau</button>
-    <button class="tab" data-tab="p5">⚠️ 5 · Confrontation</button>
-    <button class="tab" data-tab="p6">🍽️ 6 · Commandes par menu</button>
-    <button class="tab" data-tab="p7">❌ 7 · Anomalies</button>
-  </nav>
-
   <section id="p1" class="panel active">
+    <h2 class="page-title">📄 Regroupement des plannings</h2>
     <div class="card">
       <div class="toolbar">
         <select id="f1-transport"><option value="">Transport : tous</option></select>
@@ -68,67 +68,73 @@
   </section>
 
   <section id="p2" class="panel">
+    <h2 class="page-title">📈 Effectifs &amp; prévisions</h2>
     <div class="card">
       <div class="toolbar">
         <select id="f2-projet"><option value="">Projet : tous</option></select>
         <select id="f2-statut"><option value="">Statut : tous</option></select>
-        <button class="btn primary" id="btn-p2">📈 Calculer les effectifs</button>
+        <button class="btn primary" id="btn-p2">📈 Calculer</button>
         <button class="btn accent" id="btn-exp-p2">📥 Excel</button>
       </div>
-      <h3 class="sub">✍️ Prestataires hors planning (saisie manuelle)</h3>
+      <h3 class="sub">✍️ Prestataires hors planning</h3>
       <div class="presta-grid" id="p2-presta"></div>
+      <h3 class="sub">📦 Total à commander par jour</h3>
       <div class="metrics" id="p2-metrics"></div>
       <div id="out-p2"></div>
     </div>
   </section>
 
   <section id="p3" class="panel">
+    <h2 class="page-title">🚌 Planifiés par shift</h2>
     <div class="card">
       <div class="toolbar">
         <select id="f3-transport"><option value="">Transport : tous</option></select>
         <select id="f3-projet"><option value="">Projet : tous</option></select>
         <select id="f3-statut"><option value="">Statut : tous</option></select>
-        <button class="btn primary" id="btn-p3">🚌 Calculer les shifts</button>
+        <button class="btn primary" id="btn-p3">🚌 Calculer</button>
         <button class="btn accent" id="btn-exp-p3">📥 Excel</button>
       </div>
-      <div id="out-p3"><div class="hint">Cliquez sur « Calculer les shifts » après import.</div></div>
+      <div id="out-p3"><div class="hint">Cliquez sur « Calculer » après import.</div></div>
     </div>
   </section>
 
   <section id="p4" class="panel">
+    <h2 class="page-title">🕒 Planifiés par créneau</h2>
     <div class="card">
       <div class="toolbar">
         <select id="f4-projet"><option value="">Projet : tous</option></select>
         <select id="f4-statut"><option value="">Statut : tous</option></select>
-        <button class="btn primary" id="btn-p4">🕒 Calculer les créneaux</button>
+        <button class="btn primary" id="btn-p4">🕒 Calculer</button>
         <button class="btn accent" id="btn-exp-p4">📥 Excel</button>
       </div>
-      <div id="out-p4"><div class="hint">Cliquez sur « Calculer les créneaux » après import.</div></div>
+      <div id="out-p4"><div class="hint">Cliquez sur « Calculer » après import.</div></div>
     </div>
   </section>
 
   <section id="p5" class="panel">
+    <h2 class="page-title">⚠️ Confrontation planning &amp; commandes</h2>
     <div class="card">
       <div class="toolbar">
         <button class="btn primary" id="btn-p5">↔️ Générer la confrontation</button>
         <button class="btn accent" id="btn-exp-p5">📥 Excel</button>
         <input type="text" id="f5-search" placeholder="🔍 Rechercher…">
       </div>
-      <div id="out-p5"><div class="hint">La confrontation compare planning et commandes, personne par personne.</div></div>
+      <div id="out-p5"><div class="hint">Compare planning et commandes, personne par personne et jour par jour.</div></div>
     </div>
   </section>
 
   <section id="p6" class="panel">
+    <h2 class="page-title">🍽️ Commandes par menu</h2>
     <div class="card">
-      <p class="caption">Logique « Recap » : entité = préfixe du matricule (« SA » → SUPPORT + SAI) ·
-        SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » · A preparer = Nombres × (1 − absentéisme).</p>
+      <p class="caption">Entité = préfixe du matricule (« SA » → SUPPORT + SAI) · Les commandes <b>PROD de personnes non planifiées</b> ne sont pas comptées ·
+        SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » · A preparer = Nombres × (1 − absence prévue).</p>
       <details open>
         <summary>🗂️ Correspondance Préfixe matricule → Entité</summary>
         <input type="text" id="map-search" placeholder="🔍 Filtrer les préfixes…" class="mt">
         <div id="out-mapping"></div>
       </details>
       <details>
-        <summary>📉 Taux d'absentéisme par entité (appliqué au « A preparer »)</summary>
+        <summary>📉 Absence prévue par entité (appliquée au « A preparer »)</summary>
         <div class="presta-grid" id="p6-taux"></div>
       </details>
       <h3 class="sub">👷 Prestataires prévus (ajoutés au total « à commander »)</h3>
@@ -142,6 +148,7 @@
   </section>
 
   <section id="p7" class="panel">
+    <h2 class="page-title">❌ Anomalies</h2>
     <div class="card">
       <div class="toolbar">
         <button class="btn primary" id="btn-p7">⚠️ Extraire les anomalies</button>
@@ -157,7 +164,9 @@
     </div>
   </section>
 </main>
+</div>
 
+<footer class="footer-fix">Powered by <span>RAVO SERGIO</span></footer>
 <div id="toasts"></div>
 <script src="/static/app.js"></script>
 </body>
