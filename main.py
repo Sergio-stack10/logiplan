@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, send_file, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
+app.json.sort_keys = False   # ⚠️ correctif clé : plus de tri alphabétique des clés JSON
 
 JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 BASE_COLS = ['TRANSPORT', 'WORKDAY ID', 'Paid ID', 'Nom', 'Projet', 'Statut']
@@ -27,17 +28,15 @@ def default_entity_for(prefix):
     return PREFIX_RULES.get(str(prefix).upper(), DEFAULT_ENTITY)
 
 def ent_of(mat, mapping):
-    """Entité d'un matricule : correspondance manuelle > règles métier > PROD."""
     p = get_prefix(mat)
     return mapping.get(p) or PREFIX_RULES.get(p, DEFAULT_ENTITY)
 
-# ================= NORMALISATION DES IDENTIFIANTS (correctif « float ») =================
+# ================= NORMALISATION DES IDENTIFIANTS =================
 def clean_id(x):
-    """Normalise un identifiant : float 1234.0 -> '1234', NaN -> '', texte -> strip+upper."""
     try:
         if x is None: return ""
         if isinstance(x, float):
-            if x != x: return ""          # NaN
+            if x != x: return ""
             x = int(x) if x == int(x) else x
         s = str(x).strip().upper()
         return "" if s in ('NAN', 'NONE', '<NA>', 'NULL', 'NAT') else s
@@ -45,7 +44,6 @@ def clean_id(x):
         return ""
 
 def safe_paid_ids(df):
-    """Extraction immunisée des Paid ID, quel que soit le contenu (floats, NaN, mélange)."""
     out = set()
     if not isinstance(df, pd.DataFrame) or 'Paid ID' not in df.columns:
         return out
@@ -54,7 +52,7 @@ def safe_paid_ids(df):
         if s: out.add(s)
     return out
 
-# ================= ÉTAT PERSISTANT (durci) =================
+# ================= ÉTAT PERSISTANT =================
 def load_state():
     if os.path.exists(DATA_FILE):
         try:
@@ -109,7 +107,7 @@ def _to_int(v, default=0):
     except Exception:
         return int(default)
 
-# ================= FONCTIONS UTILITAIRES (logique Streamlit, inchangée) =================
+# ================= FONCTIONS UTILITAIRES =================
 def is_planned(val):
     if pd.isna(val) or isinstance(val, bool): return False
     if isinstance(val, (int, float, np.number)): return val > 0
@@ -193,7 +191,7 @@ def calculate_slots(de, a, pause_start):
         slots = [s for s in slots if s[1] != (de_h + 4) % 24]
     return slots
 
-# ================= HELPERS PAGE 6 (feuille « Recap ») =================
+# ================= HELPERS PAGE 6 =================
 VALEURS_NON_MENU = {"LUNDI", "MARDI", "MERCREDI", "JEUDI", "VENDREDI", "SAMEDI", "DIMANCHE",
                     "SHIFT", "WKD", "MENU", "CHOIX", "NOMS", "NOM", "PRENOMS", "PRÉNOMS", "PRENOM",
                     "PRÉNOM", "PROJETS", "PROJET", "DEPARTEMENT", "DÉPARTEMENT", "DEPT", "CHECK",
@@ -235,16 +233,17 @@ def derive_week_dates(week_key):
         pass
     return {}
 
-def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, taux_default):
+def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_day):
     """Logique Recap :
     - entité par préfixe matricule (SA→SUPPORT+SAI, AU/AT/FU/GU→PRESTA, reste→PROD) ;
     - commandes PROD de personnes NON planifiées ce jour ⇒ non comptabilisées ;
     - SANS CHOIX = planifiés sans commande + « Je ne serai pas présent » ;
-    - A preparer = Nombres × (1 − absence prévue), ouvrés et week-end."""
+    - Absence prévue : saisie PAR JOUR, appliquée UNIQUEMENT à PROD / PLANIFIÉ PROD
+      (PRESTA et SUPPORT + SAI : A preparer = Nombres)."""
     planned_ids = {(j, e): set() for j in jours for e in ENTITES}
     if planning_df is not None and not planning_df.empty:
         p = planning_df.copy()
-        p["Paid ID"] = p["Paid ID"].apply(clean_id)      # immunisé contre les floats
+        p["Paid ID"] = p["Paid ID"].apply(clean_id)
         p = p[p["Paid ID"] != ""]
         p["Entite"] = p["Paid ID"].apply(lambda x: ent_of(x, mapping))
         for j in jours:
@@ -255,7 +254,7 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
     melted = pd.DataFrame()
     if cmd_df is not None and not cmd_df.empty:
         c = cmd_df.copy()
-        c["Paid ID"] = c["Paid ID"].apply(clean_id)      # immunisé contre les floats
+        c["Paid ID"] = c["Paid ID"].apply(clean_id)
         c = c[c["Paid ID"] != ""]
         day_cols = [j for j in jours if j in c.columns]
         if day_cols:
@@ -266,7 +265,6 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
             melted["Entite"] = melted["Paid ID"].apply(lambda x: ent_of(x, mapping))
             melted["Absence"] = melted["Brut"].apply(is_absence_label)
             melted["Menu"] = melted["Brut"].apply(clean_menu_label)
-            # Règle métier : PROD non planifié ce jour ⇒ non comptabilisé
             keep = melted.apply(
                 lambda r: (r["Entite"] != "PROD / PLANIFIÉ PROD")
                           or (r["Paid ID"] in planned_ids.get((r["Jour"], r["Entite"]), set())), axis=1)
@@ -287,8 +285,9 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
     recap, day_totals = {}, {}
     for j in jours:
         menu_list = [m for m, _ in sorted(day_menu_totals.get(j, {}).items(), key=lambda kv: (-kv[1], kv[0]))]
+        facteur_prod = 1.0 - (_to_float(taux_by_day.get(j, 0)) / 100.0)
         for ent in ENTITES:
-            facteur = 1.0 - (taux_by_entity.get(ent, taux_default) / 100.0)
+            facteur = facteur_prod if ent == "PROD / PLANIFIÉ PROD" else 1.0
             pids, ords = planned_ids.get((j, ent), set()), ordered.get((j, ent), set())
             abs_n = abs_cnt.get((j, ent), 0)
             sans_choix = len(pids - ords) + abs_n
@@ -315,7 +314,7 @@ def compute_recap_menus(planning_df, cmd_df, mapping, jours, taux_by_entity, tau
         day_totals[j] = sum(recap[(j, e)]["total_prep"] for e in ENTITES_MAIN)
     return recap, day_totals
 
-# ================= SÉRIALISATION ROBUSTE =================
+# ================= SÉRIALISATION =================
 def jsonable(v):
     try:
         if v is None or v is pd.NaT: return None
@@ -345,12 +344,11 @@ def df_payload(df):
     return {'columns': cols, 'rows': rows}
 
 def enforce_cols(df, order):
-    """Force l'ordre exact des colonnes (les manquantes sont créées vides)."""
     for c in order:
         if c not in df.columns: df[c] = ""
     return df[order]
 
-# ================= PARSING (logique Streamlit, adaptée aux bytes) =================
+# ================= PARSING =================
 def get_week_number(data, engine):
     try:
         xls = pd.ExcelFile(io.BytesIO(data), engine=engine)
@@ -439,7 +437,7 @@ def parse_reference(src_bytes):
     df = df[~df[wd_col].isin(['NAN', 'NONE', '*', ''])]
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
-# ================= CONSTRUCTEURS PARTAGÉS =================
+# ================= CONSTRUCTEURS =================
 def _apply_filters(pl):
     out = pl.copy()
     for col, key in (('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')):
@@ -505,7 +503,6 @@ def build_slots_peaks(pl):
     return slots, peaks
 
 def build_conf(pl, cmd):
-    # Normalisation des Paid ID des DEUX côtés avant la fusion (floats/NaN immunisés)
     pl = pl.copy(); cmd = cmd.copy()
     pl['Paid ID'] = pl['Paid ID'].apply(clean_id)
     cmd['Paid ID'] = cmd['Paid ID'].apply(clean_id)
@@ -561,7 +558,7 @@ def dl(buf, filename):
     return send_file(buf, download_name=filename,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-# ================= GESTIONNAIRE D'ERREURS GLOBAL =================
+# ================= GESTIONNAIRE D'ERREURS =================
 @app.errorhandler(Exception)
 def handle_exception(e):
     app.logger.exception("Erreur serveur LogiPlan")
@@ -744,7 +741,6 @@ def api_export_conf():
 def api_prefixes():
     try:
         week, pl, cmd = current_data()
-        # Extraction 100 % immunisée : plus aucun .strip() sur un float possible
         ids = safe_paid_ids(cmd) | safe_paid_ids(pl)
         prefixes = sorted({p[:2] for p in ids if len(p) >= 2})
         wk_calc = STATE['calculs'].get(week) if week else None
@@ -759,18 +755,17 @@ def api_prefixes():
 def _recap_compute(body):
     week, pl, cmd = current_data()
     raw_taux = body.get('taux') or {}
-    taux = {e: _to_float(raw_taux.get(e), 5) for e in ENTITES_MAIN}
+    taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
     mapping_raw = body.get('mapping') or {}
     mapping = {str(k)[:2].upper(): v for k, v in mapping_raw.items() if v in ENTITES}
-    presta = {j: _to_int((body.get('presta_prevus') or {}).get(j)) for j in JOURS}
-    recap, day_totals = compute_recap_menus(pl, cmd, mapping, JOURS, taux, taux.get('PROD / PLANIFIÉ PROD', 5))
-    return week, pl, cmd, recap, day_totals, presta
+    recap, day_totals = compute_recap_menus(pl, cmd, mapping, JOURS, taux_by_day)
+    return week, pl, cmd, recap, day_totals
 
 @app.post('/api/recap')
 def api_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
-        week, pl, cmd, recap, day_totals, presta = _recap_compute(body)
+        week, pl, cmd, recap, day_totals = _recap_compute(body)
         if cmd is None:
             return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes dans la barre latérale."}), 400
         if week:
@@ -783,8 +778,7 @@ def api_recap():
         for j in JOURS:
             d = dates.get(j)
             date_txt = f"{d.day:02d} {mois_fr[d.month-1]} {d.year}" if d else ""
-            prest_n = presta[j]
-            a_cmd = day_totals[j] + prest_n
+            a_cmd = day_totals[j]
             entities = []
             for ent in ENTITES_MAIN:
                 blk = recap[(j, ent)]
@@ -795,17 +789,14 @@ def api_recap():
                 entities.append({'entity': ent, 'color': ENTITY_COLORS[ent], 'planned_n': blk['planned_n'],
                                  'reponses': blk['reponses'], 'abs_n': blk['abs_n'],
                                  'sans_choix': blk['sans_choix'], 'rows': rows})
-            blk_a = recap[(j, 'AUTRE / IGNORÉ')]
-            warn = (f"{blk_a['total_n']} commande(s) / {blk_a['planned_n']} planifié(s) avec un préfixe classé "
-                    f"« AUTRE » manuellement.") if (blk_a['total_n'] > 0 or blk_a['planned_n'] > 0) else None
-            days[j] = {'date': date_txt, 'a_commander': a_cmd, 'presta': prest_n,
+            days[j] = {'date': date_txt, 'a_commander': a_cmd,
                        'ent_line': " • ".join(f"{e} : {recap[(j, e)]['total_prep']}" for e in ENTITES_MAIN),
-                       'entities': entities, 'warn': warn}
+                       'entities': entities}
             day_order.append(j)
             row = {'Jour': j}; row.update({e: recap[(j, e)]['total_prep'] for e in ENTITES_MAIN})
-            row.update({'Presta. prévus': prest_n, 'À commander': a_cmd}); summary.append(row)
+            row.update({'À commander': a_cmd}); summary.append(row)
         total = {'Jour': 'TOTAL SEMAINE'}
-        for k in ENTITES_MAIN + ['Presta. prévus', 'À commander']:
+        for k in ENTITES_MAIN + ['À commander']:
             total[k] = sum(r[k] for r in summary)
         summary.append(total)
         return {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
@@ -818,7 +809,7 @@ def api_recap():
 def api_export_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
-        week, pl, cmd, recap, _, _ = _recap_compute(body)
+        week, pl, cmd, recap, _ = _recap_compute(body)
         if cmd is None: return jsonify({'error': "Aucune commande disponible."}), 400
         export_rows = [{'Jour': j, 'Entité': ent, 'Choix': r['Choix'], 'Nombres': r['Nombres'],
                         'Pourcentage (%)': round(float(r['Pourcentage']), 1), 'A preparer': r['A preparer']}
