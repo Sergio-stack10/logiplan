@@ -63,6 +63,21 @@ ENTITES_MAIN = ENTITES
 ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ PROD": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
+# ================= PERSISTANCE MONGODB (recommandée) =================
+# Créez un cluster gratuit sur mongodb.com/atlas, puis définissez MONGODB_URI
+# dans Render → Environment. Sans cette variable, l'app fonctionne comme avant.
+mongo_col = None
+if os.environ.get('MONGODB_URI'):
+    try:
+        from pymongo import MongoClient
+        from bson.binary import Binary
+        _mc = MongoClient(os.environ['MONGODB_URI'], serverSelectionTimeoutMS=8000)
+        _mc.admin.command('ping')
+        mongo_col = _mc[os.environ.get('MONGODB_DB', 'logiplan')]['state']
+        app.logger.info("MongoDB connecté : persistance permanente active")
+    except Exception as e:
+        app.logger.warning(f"MongoDB indisponible, persistance par fichier uniquement : {e}")
+
 def alpha_prefix(mat):
     m = re.match(r'^[A-Z]+', str(mat).strip().upper())
     return m.group(0) if m else ""
@@ -115,12 +130,37 @@ def load_state():
 
 STATE = load_state()
 
+# Restauration depuis MongoDB si le disque local a été vidé (redéploiement Render)
+if not STATE['plannings'] and mongo_col:
+    try:
+        doc = mongo_col.find_one({'_id': 'state'})
+        if doc and 'blob' in doc:
+            restored = pickle.loads(gzip.decompress(doc['blob']))
+            if isinstance(restored, dict) and isinstance(restored.get('plannings'), dict):
+                STATE = restored
+                try:
+                    with open(DATA_FILE, 'wb') as f:
+                        pickle.dump(STATE, f)
+                except Exception:
+                    pass
+                app.logger.info("État restauré depuis MongoDB")
+    except Exception as e:
+        app.logger.warning(f"Restauration MongoDB impossible : {e}")
+
 def save_state():
     try:
         with open(DATA_FILE, 'wb') as f:
             pickle.dump(STATE, f)
     except Exception:
         pass
+    if mongo_col:
+        try:
+            blob = Binary(gzip.compress(pickle.dumps(STATE)))
+            mongo_col.update_one({'_id': 'state'},
+                                 {'$set': {'blob': blob, 'updated': datetime.datetime.utcnow()}},
+                                 upsert=True)
+        except Exception:
+            pass
 
 def planning_valide(df):
     return (isinstance(df, pd.DataFrame) and not df.empty
