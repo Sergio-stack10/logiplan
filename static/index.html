@@ -18,8 +18,9 @@
     <button class="tab" data-tab="p3">🚌 Par Shift</button>
     <button class="tab" data-tab="p4">🕒 Par créneau</button>
     <button class="tab" data-tab="p5">⚠️ Confrontation</button>
+    <button class="tab" data-tab="p7">📋 Constat</button>
     <button class="tab" data-tab="p6">🍽️ Commandes par menu</button>
-    <button class="tab" data-tab="p7">❌ Anomalies</button>
+    <button class="tab" data-tab="p8">🧾 Synthèse</button>
   </nav>
   <span class="week-badge" id="week-badge">—</span>
 </header>
@@ -37,17 +38,14 @@
   <input type="text" id="inp-week" placeholder="Ex : S38 (auto si vide)">
   <button class="btn primary" id="btn-import">🚀 Lancer l'import et le regroupement</button>
   <div id="imp-summary"></div>
-
   <h3>2 · Absentéisme global</h3>
   <div class="slider-row">
     <input type="range" id="inp-taux" min="0" max="30" value="5">
     <b id="taux-val">5%</b>
   </div>
-
   <h3>3 · Historique des semaines</h3>
   <select id="sel-week"></select>
   <button class="btn danger-o" id="btn-del-week">🗑️ Supprimer cette semaine</button>
-
   <div id="sidebar-msg"></div>
 </aside>
 
@@ -94,7 +92,7 @@
         <button class="btn primary" id="btn-p3">🚌 Calculer</button>
         <button class="btn accent" id="btn-exp-p3">📥 Excel</button>
       </div>
-      <div id="out-p3"><div class="hint">Cliquez sur « Calculer » après import.</div></div>
+      <div id="out-p3"><div class="hint">Cliquez sur « Calculer » (les résultats sont conservés).</div></div>
     </div>
   </section>
 
@@ -107,7 +105,7 @@
         <button class="btn primary" id="btn-p4">🕒 Calculer</button>
         <button class="btn accent" id="btn-exp-p4">📥 Excel</button>
       </div>
-      <div id="out-p4"><div class="hint">Cliquez sur « Calculer » après import.</div></div>
+      <div id="out-p4"><div class="hint">Cliquez sur « Calculer » (les résultats sont conservés).</div></div>
     </div>
   </section>
 
@@ -119,18 +117,36 @@
         <button class="btn accent" id="btn-exp-p5">📥 Excel</button>
         <input type="text" id="f5-search" placeholder="🔍 Rechercher…">
       </div>
-      <div id="out-p5"><div class="hint">Compare planning et commandes, personne par personne et jour par jour.</div></div>
+      <div id="out-p5"><div class="hint">Compare planning et commandes, personne par personne.</div></div>
+    </div>
+  </section>
+
+  <section id="p7" class="panel">
+    <h2 class="page-title">📋 Constats</h2>
+    <div class="card">
+      <div class="toolbar">
+        <button class="btn primary" id="btn-p7">📋 Extraire les constats</button>
+        <button class="btn accent" id="btn-exp-p7">📥 Excel</button>
+        <input type="text" id="f7-search" placeholder="🔍 Rechercher…">
+      </div>
+      <div id="out-p7"><div class="hint">Nécessite la confrontation (onglet 5).</div></div>
+      <details class="mt">
+        <summary>🆔 Vérification des matricules paie (Workday vs Liste Actif)</summary>
+        <button class="btn" id="btn-matr">🔎 Lancer la vérification</button>
+        <div id="out-matr"></div>
+      </details>
     </div>
   </section>
 
   <section id="p6" class="panel">
     <h2 class="page-title">🍽️ Commandes par menu</h2>
     <div class="card">
-      <p class="caption">Entités (automatiques) : matricule commençant par <b>« W »</b> ou <b>« ST »</b> → <b>PROD / PLANIFIÉ PROD</b> ·
+      <p class="caption">Entités (automatiques) : matricule <b>« W… »</b> ou <b>« ST… »</b> → <b>PROD / PLANIFIÉ PROD</b> ·
         tout le reste → <b>HORS PROD</b> · Les commandes <b>PROD de personnes non planifiées</b> ne sont pas comptées ·
-        SANS CHOIX = Planifié − total des menus (inclut les « Je ne serai pas présent ») ·
-        <b>Absence prévue</b> : se règle dans chaque jour, appliquée uniquement à <b>PROD</b> ·
-        Planifié HORS PROD = « Prestataires (Hors Planning) » de la page <b>Effectifs</b>.</p>
+        <b>Planifié PROD</b> = « Total Théorique » de la page <b>Effectifs</b> ·
+        <b>Planifié HORS PROD</b> = « Prestataires (Hors Planning) » de la page <b>Effectifs</b> ·
+        SANS CHOIX = max(0, Planifié − somme des menus) ·
+        <b>Absence prévue</b> : par jour, appliquée uniquement à <b>PROD</b>.</p>
       <details open>
         <summary>🗂️ Correspondance Préfixe matricule → Entité (automatique)</summary>
         <input type="text" id="map-search" placeholder="🔍 Filtrer les préfixes…" class="mt">
@@ -141,24 +157,25 @@
         <button class="btn accent" id="btn-exp-p6">📥 Excel</button>
         <button class="btn" id="btn-pdf-p6">🖨️ PDF</button>
       </div>
-      <div id="out-p6"><div class="hint">Effectifs (avec prestataires) + Commandes importés → puis « Calculer le récapitulatif ».</div></div>
+      <div id="out-p6"><div class="hint">1) Onglet Effectifs : calculez (avec prestataires) · 2) Revenez ici : Calculer.</div></div>
     </div>
   </section>
 
-  <section id="p7" class="panel">
-    <h2 class="page-title">❌ Anomalies</h2>
+  <section id="p8" class="panel">
+    <h2 class="page-title">🧾 Synthèse de la semaine</h2>
     <div class="card">
+      <p class="caption">Commande finale et Consommé sont <b>modifiables</b> (saisie sauvegardée) ·
+        Non consommé = max(0, Commande finale − Consommé) · À facturer = Commande si Commande &gt; Consommé, sinon Consommé ·
+        MONTANT DA MGA HT = À facturer × Prix unitaire.</p>
       <div class="toolbar">
-        <button class="btn primary" id="btn-p7">⚠️ Extraire les anomalies</button>
-        <button class="btn accent" id="btn-exp-p7">📥 Excel</button>
-        <input type="text" id="f7-search" placeholder="🔍 Rechercher…">
+        <label style="font-size:12px;color:#6b7c8a;font-weight:600">Prix unitaire (MGA HT) :
+          <input type="number" id="inp-pu" min="0" step="1" value="0" style="width:120px;padding:6px;border:1px solid #dde5ec;border-radius:8px;text-align:right">
+        </label>
+        <button class="btn primary" id="btn-p8">🧾 Générer la synthèse</button>
+        <button class="btn accent" id="btn-exp-p8">📥 Excel</button>
+        <button class="btn" id="btn-pdf-p8">🖨️ PDF</button>
       </div>
-      <div id="out-p7"><div class="hint">Nécessite la confrontation (onglet 5).</div></div>
-      <details class="mt">
-        <summary>🆔 Vérification des matricules paie (Workday vs Liste Actif)</summary>
-        <button class="btn" id="btn-matr">🔎 Lancer la vérification</button>
-        <div id="out-matr"></div>
-      </details>
+      <div id="out-p8"><div class="hint">Nécessite Effectifs + Commandes calculés (onglets 2 et 7).</div></div>
     </div>
   </section>
 </main>
