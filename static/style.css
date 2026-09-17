@@ -165,4 +165,30 @@ summary:hover{color:var(--teal)}
 table.syn td.editcell{padding:2px 4px}
 table.syn td.editcell input{width:78px;padding:4px;border:1px solid #bdd3e2;border-radius:7px;text-align:right;font-size:12px;background:#f4fbff}
 table.syn td.editcell input:focus{outline:2px solid var(--teal);background:#fff}
+/* ===== Écran de connexion ===== */
+#login-overlay{position:fixed;inset:0;background:linear-gradient(135deg,#012B41,#003D5B);z-index:10000;
+  display:flex;align-items:center;justify-content:center}
+#login-overlay.hidden{display:none}
+.login-card{background:#fff;border-radius:20px;padding:32px 36px;max-width:440px;width:92%;
+  box-shadow:0 20px 60px rgba(0,0,0,.45);text-align:center}
+.login-logo{font-size:38px}
+.login-card h1{color:var(--navy);border:none;margin:6px 0 2px}
+.login-sub{color:var(--muted);font-size:13px;margin:0 0 14px}
+.role-pick{display:flex;gap:12px;margin:14px 0}
+.role-btn{flex:1;border:2px solid #dde5ec;background:#f8fafb;border-radius:14px;padding:14px 8px;
+  cursor:pointer;display:flex;flex-direction:column;gap:4px;align-items:center;font-size:15px;
+  font-weight:700;color:var(--navy);transition:.2s}
+.role-btn small{font-weight:400;color:var(--muted);font-size:10.5px;line-height:1.3}
+.role-btn:hover{border-color:var(--teal)}
+.role-btn.selected{border-color:var(--teal);background:var(--teal-soft);box-shadow:0 4px 12px rgba(37,226,204,.3)}
+#login-pwd{width:100%;padding:11px 14px;border:1px solid var(--line);border-radius:10px;font-size:14px;margin:6px 0 10px;box-sizing:border-box}
+#login-err .msg{margin:8px 0 0}
+
+/* ===== Badge de rôle & déconnexion ===== */
+.role-badge{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;
+  border-radius:20px;padding:5px 14px;font-size:12px;font-weight:700;white-space:nowrap}
+.btn-mini{background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:10px;
+  padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:.2s;white-space:nowrap}
+.btn-mini:hover{background:#e74c3c}
+.viewer-hidden{display:none!important}
 }
