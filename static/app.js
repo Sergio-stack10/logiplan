@@ -15,7 +15,7 @@ function toast(text, type='ok'){
 async function api(url, opts={}){
   const r = await fetch(url, opts); let d = {};
   try { d = await r.json(); } catch(e){}
-  if (r.status === 401){ showLogin(); throw new Error(d.error || "Connexion requise"); }
+  if (r.status === 401){ window.location.href = '/'; throw new Error("Connexion requise"); }
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
 }
@@ -67,43 +67,16 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
-/* ================= AUTHENTIFICATION (page dédiée) ================= */
-function showLogin(){
-  document.body.classList.add('logged-out');
-  const u = $('#login-user'); if (u) setTimeout(() => u.focus(), 120);
-}
-function hideLogin(){ document.body.classList.remove('logged-out'); }
+/* ================= AUTHENTIFICATION (gérée par le serveur) ================= */
 function applyRoleUI(){
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', ROLE === 'viewer'));
   const b = $('#role-badge');
   if (b) b.innerHTML = ROLE === 'admin' ? '🛡️ Admin' : '👁️ Visualiseur';
   ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = (ROLE === 'viewer'); });
 }
-async function doLogin(){
-  const errEl = $('#login-err'); if (errEl) errEl.innerHTML = '';
-  const user = ($('#login-user').value || '').trim();
-  const pwd = $('#login-pwd').value || '';
-  if (!user || !pwd){
-    if (errEl) errEl.innerHTML = '<div class="msg err">Renseignez le nom d\'utilisateur et le mot de passe.</div>';
-    return;
-  }
-  busy($('#btn-login'), true, 'Connexion…');
-  try {
-    const r = await api('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({username: user, password: pwd})});
-    ROLE = r.role; hideLogin(); applyRoleUI();
-    await startApp();
-  } catch(e){
-    if (errEl) errEl.innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`;
-  }
-  busy($('#btn-login'), false);
-}
-on('#btn-login', 'click', doLogin);
-on('#login-user', 'keydown', e => { if (e.key === 'Enter') $('#login-pwd').focus(); });
-on('#login-pwd', 'keydown', e => { if (e.key === 'Enter') doLogin(); });
 on('#btn-logout', 'click', async () => {
   try { await api('/api/logout', {method:'POST'}); } catch(e){}
-  location.reload();
+  window.location.href = '/';   // le serveur renverra la page de connexion
 });
 
 /* ---------- IndexedDB ---------- */
@@ -456,7 +429,7 @@ async function calcP6(){
 on('#btn-p6', 'click', calcP6);
 async function downloadPost(url, filename, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  if (r.status === 401){ showLogin(); throw new Error("Connexion requise"); }
+  if (r.status === 401){ window.location.href = '/'; throw new Error("Connexion requise"); }
   if (!r.ok){ const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Export impossible'); }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(await r.blob()); a.download = filename; a.click();
@@ -650,13 +623,10 @@ async function startApp(){
 (async function boot(){
   try {
     const me = await api('/api/me');
-    if (me.role){
-      ROLE = me.role; hideLogin(); applyRoleUI();
-      if (me.using_defaults && me.role === 'admin')
-        setTimeout(() => toast('⚠️ Mots de passe par défaut actifs — définissez ADMIN_USER / ADMIN_PASSWORD / VIEWER_USER / VIEWER_PASSWORD dans Render → Environment', 'warn'), 1800);
-      await startApp();
-    } else {
-      showLogin();
-    }
-  } catch(e){ showLogin(); }
+    if (!me.role){ window.location.href = '/'; return; }
+    ROLE = me.role; applyRoleUI();
+    if (me.using_defaults && me.role === 'admin')
+      setTimeout(() => toast('⚠️ Identifiants par défaut actifs — définissez ADMIN_USER / ADMIN_PASSWORD / VIEWER_USER / VIEWER_PASSWORD dans Render → Environment', 'warn'), 1800);
+    await startApp();
+  } catch(e){ window.location.href = '/'; }
 })();
