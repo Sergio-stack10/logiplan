@@ -1,6 +1,5 @@
 'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
-const ENTITES = ['HORS PROD','PROD / PLANIFIÉ PROD'];
 const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -66,7 +65,7 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
-/* ---------- IndexedDB (sauvegarde navigateur) ---------- */
+/* ---------- IndexedDB ---------- */
 function idbOpen(){ return new Promise((res, rej) => {
   const r = indexedDB.open('logiplan', 1);
   r.onupgradeneeded = () => r.result.createObjectStore('kv');
@@ -126,14 +125,17 @@ on('#sel-week', 'change', async e => {
   await api('/api/select_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: e.target.value})});
   p1Cache.week = undefined;
   await loadP1();
-  await autoLoadAll();          // results stockés → affichage direct (demande n°2)
+  await autoLoadAll();
 });
 on('#btn-del-week', 'click', async () => {
-  if (!confirm('Supprimer définitivement cette semaine ?')) return;
+  if (!confirm('Supprimer définitivement cette semaine et toutes ses données ?')) return;
   await api('/api/delete_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: $('#sel-week').value})});
   p1Cache.week = undefined;
+  $('#out-p2').innerHTML = ''; $('#out-p3').innerHTML = ''; $('#out-p4').innerHTML = '';
+  $('#out-p5').innerHTML = ''; $('#out-p6').innerHTML = ''; $('#out-p8').innerHTML = '';
+  p5Rows = null; p7Rows = null; lastRecapData = null; lastSynData = null;
   await refreshState(); await loadP1(); await saveBackup();
-  toast('Semaine supprimée');
+  toast('Semaine supprimée (données effacées partout)');
 });
 
 async function refreshState(){
@@ -155,7 +157,6 @@ async function refreshState(){
   if (b.dataset.tab === 'p8'){ const s8 = await getResult('synthese'); if (s8) renderSynthese(s8); }
 }));
 
-/* Affichage direct des résultats stockés au changement de semaine (demande n°2) */
 async function autoLoadAll(){
   try {
     const [p2, p3, p4, conf, recap, syn] = await Promise.all(
@@ -386,10 +387,9 @@ function renderRecap(d){
         </div>
       </div>`;
     for (const E of D.entities){
-      const inco = E.over ? ' &nbsp;<span class="badge b-abs">⚠️ menus > planifiés → SANS CHOIX = 0</span>' : '';
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
         <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> ·
-        SANS CHOIX : <b>${E.sans_choix}</b> · Absences déclarées : <b>${E.abs_prevues}</b>${inco}</div>
+        SANS CHOIX : <b>${E.sans_choix}</b> · Absences déclarées : <b>${E.abs_prevues}</b></div>
         ${tableHTML(orderedRows(E.rows, RECAP_COLS), {recap:true})}</div></div>`;
     }
     h += '</div>';
@@ -435,7 +435,20 @@ function pdfSimpleTable(rows, cols){
   });
   return h + '</tbody></table>';
 }
-function buildPdfHtml(d){
+function printIframe(html){
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(iframe);
+  iframe.onload = () => {
+    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
+    catch(e){ toast('Impression indisponible : ' + e.message, 'err'); }
+    setTimeout(() => iframe.remove(), 60000);
+  };
+  iframe.srcdoc = html;
+}
+on('#btn-pdf-p6', 'click', () => {
+  if (!lastRecapData){ toast("Calculez d'abord le récapitulatif.", 'warn'); return; }
+  const d = lastRecapData;
   let h = `<h1>LogiPlan — Commandes par menu · Semaine ${esc(d.week || '')}</h1>
            <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')}</p>`;
   (d.warnings || []).forEach(w => h += `<div class="msg">⚠️ ${esc(w)}</div>`);
@@ -453,7 +466,7 @@ function buildPdfHtml(d){
     }
     h += '</div>';
   }
-  return `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>LogiPlan</title><style>
+  printIframe(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>LogiPlan</title><style>
 body{font-family:'Segoe UI',Arial,sans-serif;color:#22333f;padding:18px;font-size:12px}
 h1{color:#003D5B;font-size:18px;border-bottom:3px solid #25E2CC;padding-bottom:6px;margin:0 0 4px}
 h3{color:#003D5B;font-size:14px;margin:14px 0 4px}
@@ -469,25 +482,10 @@ tr.sanschoix td{font-weight:700}
 .entity-block{page-break-inside:avoid}
 .entity-title{color:#fff;font-weight:700;padding:5px 12px;font-size:11.5px;margin-top:6px}
 .msg{background:#fff3cd;color:#775500;padding:6px 10px;border-radius:6px;font-size:11px;margin:6px 0}
-@page{margin:12mm}</style></head><body>${h}</body></html>`;
-}
-function printIframe(html){
-  const iframe = document.createElement('iframe');
-  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
-  document.body.appendChild(iframe);
-  iframe.onload = () => {
-    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
-    catch(e){ toast('Impression indisponible : ' + e.message, 'err'); }
-    setTimeout(() => iframe.remove(), 60000);
-  };
-  iframe.srcdoc = html;
-}
-on('#btn-pdf-p6', 'click', () => {
-  if (!lastRecapData){ toast("Calculez d'abord le récapitulatif.", 'warn'); return; }
-  printIframe(buildPdfHtml(lastRecapData));
+@page{margin:12mm}</style></head><body>${h}</body></html>`);
 });
 
-/* ---------- PAGE 7 : Constats (ex-Anomalies) ---------- */
+/* ---------- PAGE 7 : Constats ---------- */
 let p7Rows = null;
 function renderP7(){
   if (p7Rows === null) return;
@@ -522,29 +520,30 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse (demande n°4) ---------- */
-const SYN_COLS = ['Jour','Planifié total','À commander','Commande finale','Consommé','Non consommé',
-                  'À facturer','QS (%)','QS conso vs commandé final (%)','MONTANT DA MGA HT',
-                  'Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
-const EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme'};
-let synEdits = {};   // {Jour:{commande_finale, consomme}}
+/* ---------- PAGE 8 : Synthèse mensuelle par dates (demandes 3 & 4) ---------- */
+const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
+                  'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
+                  'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
+const SYN_EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme'};
+let synEdits = {};        // saisies non encore envoyées {dateIso: {champ: valeur}}
 let lastSynData = null;
 
 function synthBody(){
-  return { taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]])),
+  return { month: ($('#inp-month') ? $('#inp-month').value : ''),
            pu: numVal('inp-pu'), edits: synEdits };
 }
 function renderSynthese(d){
   lastSynData = d;
+  if ($('#inp-month') && !$('#inp-month').value) $('#inp-month').value = d.month || '';
   if ($('#inp-pu') && document.activeElement !== $('#inp-pu')) $('#inp-pu').value = d.pu ?? 0;
   let h = '<div class="tscroll"><table class="data syn"><thead><tr>' +
     SYN_COLS.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
   d.rows.forEach(r => {
-    const isTotal = r['Jour'] === 'TOTAL SEMAINE';
+    const isTotal = String(r['Date']).toUpperCase().startsWith('TOTAL');
     h += `<tr class="${isTotal ? 'total' : ''}">`;
     SYN_COLS.forEach(c => {
-      if (!isTotal && EDITABLE[c]){
-        h += `<td class="editcell"><input type="number" min="0" step="1" data-jour="${esc(r['Jour'])}" data-champ="${EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
+      if (!isTotal && SYN_EDITABLE[c]){
+        h += `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(r.DateIso)}" data-champ="${SYN_EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
       } else if (c.includes('(%)')){
         h += `<td>${fmtPct(r[c])}</td>`;
       } else if (c === 'MONTANT DA MGA HT'){
@@ -557,40 +556,42 @@ function renderSynthese(d){
   });
   h += '</tbody></table></div>';
   $('#out-p8').innerHTML = h;
-  $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', debounce(async () => {
-    const jour = inp.dataset.jour, champ = inp.dataset.champ;
-    synEdits[jour] = synEdits[jour] || {};
-    synEdits[jour][champ] = parseInt(inp.value) || 0;
-    await genSynthese(false);
+  $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', debounce(() => {
+    const diso = inp.dataset.date, champ = inp.dataset.champ;
+    synEdits[diso] = synEdits[diso] || {};
+    synEdits[diso][champ] = parseInt(inp.value) || 0;
+    genSynthese(false);
   }, 400)));
 }
 async function genSynthese(showToast = true){
   busy($('#btn-p8'), true, 'Calcul…');
   try {
     renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())}));
+    synEdits = {};                    // saisies persistées côté serveur
     if (showToast) toast('Synthèse générée ✅');
   } catch(e){ $('#out-p8').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; if (showToast) toast(esc(e.message), 'err'); }
   busy($('#btn-p8'), false);
 }
 on('#btn-p8', 'click', () => genSynthese());
-on('#inp-pu', 'change', debounce(() => { if (lastSynData) genSynthese(false); }, 500));
+on('#inp-month', 'change', () => genSynthese());
+on('#inp-pu', 'change', debounce(() => genSynthese(false), 500));
 on('#btn-exp-p8', 'click', async () => {
-  try { await downloadPost('/api/export_synthese', 'synthese_semaine.xlsx', synthBody()); }
+  try { await downloadPost('/api/export_synthese', 'synthese_mensuelle.xlsx', synthBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
 });
 on('#btn-pdf-p8', 'click', () => {
   if (!lastSynData){ toast("Générez d'abord la synthèse.", 'warn'); return; }
   const d = lastSynData;
-  let h = `<h1>LogiPlan — Synthèse · Semaine ${esc(d.week || '')}</h1>
+  let h = `<h1>LogiPlan — Synthèse mensuelle · ${esc(d.month || '')}</h1>
     <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')} · Prix unitaire : ${Number(d.pu).toLocaleString('fr-FR')} MGA HT</p>`;
   h += pdfSimpleTable(d.rows, SYN_COLS);
   printIframe(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Synthèse</title><style>
-body{font-family:'Segoe UI',Arial,sans-serif;padding:14px;font-size:10.5px;color:#22333f}
-h1{color:#003D5B;font-size:16px;border-bottom:3px solid #25E2CC;padding-bottom:5px;margin:0 0 4px}
+body{font-family:'Segoe UI',Arial,sans-serif;padding:14px;font-size:10px;color:#22333f}
+h1{color:#003D5B;font-size:15px;border-bottom:3px solid #25E2CC;padding-bottom:5px;margin:0 0 4px}
 .gen{color:#789;font-size:9px;margin:0 0 8px}
 table{border-collapse:collapse;width:100%}
-th{background:#003D5B;color:#fff;padding:3px 5px;font-size:9px;text-align:left}
-td{border:1px solid #dde5ec;padding:2px 5px}
+th{background:#003D5B;color:#fff;padding:3px 4px;font-size:8.5px;text-align:left}
+td{border:1px solid #dde5ec;padding:2px 4px}
 tbody tr:nth-child(odd) td{background:#f8fbfd}
 tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2px solid #003D5B}
 @page{size:A4 landscape;margin:10mm}</style></head><body>${h}</body></html>`);
