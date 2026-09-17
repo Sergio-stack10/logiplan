@@ -134,7 +134,7 @@ def load_state():
 STATE = load_state()
 
 # Restauration depuis MongoDB si le disque local a été vidé (redéploiement Render)
-if not STATE['plannings'] and mongo_col:
+if not STATE['plannings'] and mongo_col is not None:
     try:
         doc = mongo_col.find_one({'_id': 'state'})
         if doc and 'blob' in doc:
@@ -156,7 +156,7 @@ def save_state():
             pickle.dump(STATE, f)
     except Exception:
         pass
-    if mongo_col and Binary:
+    if mongo_col is not None and Binary is not None:
         try:
             blob = Binary(gzip.compress(pickle.dumps(STATE)))
             mongo_col.update_one({'_id': 'state'},
