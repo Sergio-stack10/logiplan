@@ -162,24 +162,26 @@
   </section>
 
   <section id="p8" class="panel">
-    <h2 class="page-title">🧾 Synthèse de la semaine</h2>
+    <h2 class="page-title">🧾 Synthèse mensuelle</h2>
     <div class="card">
-      <p class="caption">Commande finale et Consommé sont <b>modifiables</b> (saisie sauvegardée) ·
+      <p class="caption">Agrège <b>toutes les semaines enregistrées</b> du mois choisi, une ligne par <b>date réelle</b> ·
+        Commande finale et Consommé sont <b>modifiables</b> (saisies mémorisées par date) ·
         Non consommé = max(0, Commande finale − Consommé) · À facturer = Commande si Commande &gt; Consommé, sinon Consommé ·
         MONTANT DA MGA HT = À facturer × Prix unitaire.</p>
       <div class="toolbar">
+        <label style="font-size:12px;color:#6b7c8a;font-weight:600">📅 Mois :
+          <input type="month" id="inp-month" style="padding:6px;border:1px solid #dde5ec;border-radius:8px">
+        </label>
         <label style="font-size:12px;color:#6b7c8a;font-weight:600">Prix unitaire (MGA HT) :
           <input type="number" id="inp-pu" min="0" step="1" value="0" style="width:120px;padding:6px;border:1px solid #dde5ec;border-radius:8px;text-align:right">
         </label>
-        <button class="btn primary" id="btn-p8">🧾 Générer la synthèse</button>
+        <button class="btn primary" id="btn-p8">🧾 Générer</button>
         <button class="btn accent" id="btn-exp-p8">📥 Excel</button>
         <button class="btn" id="btn-pdf-p8">🖨️ PDF</button>
       </div>
-      <div id="out-p8"><div class="hint">Nécessite Effectifs + Commandes calculés (onglets 2 et 7).</div></div>
+      <div id="out-p8"><div class="hint">Choisissez un mois puis « Générer » (données issues de toutes les semaines enregistrées).</div></div>
     </div>
   </section>
-</main>
-</div>
 
 <footer class="footer-fix">Powered by <span>RAVO SERGIO</span></footer>
 <div id="toasts"></div>
