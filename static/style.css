@@ -165,32 +165,6 @@ summary:hover{color:var(--teal)}
 table.syn td.editcell{padding:2px 4px}
 table.syn td.editcell input{width:78px;padding:4px;border:1px solid #bdd3e2;border-radius:7px;text-align:right;font-size:12px;background:#f4fbff}
 table.syn td.editcell input:focus{outline:2px solid var(--teal);background:#fff}
-/* ===== Page de connexion plein écran (style appli dédiée) ===== */
-body.logged-out > header.topbar,
-body.logged-out > .layout,
-body.logged-out > .footer-fix,
-body.logged-out > #toasts { display: none !important; }
-#login-screen{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;
-  background:linear-gradient(160deg,#01253a 0%,#013a57 50%,#01253a 100%);overflow:auto;padding:20px}
-body:not(.logged-out) #login-screen{display:none}
-.login-card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
-  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border-radius:24px;padding:42px 38px;width:min(420px,94vw);
-  box-shadow:0 24px 70px rgba(0,0,0,.5);text-align:center}
-.login-ico{width:92px;height:92px;margin:0 auto 20px;background:var(--teal);border-radius:26px;
-  display:flex;align-items:center;justify-content:center;font-size:42px;
-  box-shadow:0 10px 30px rgba(37,226,204,.35)}
-.login-card h1{color:#fff;border:none;margin:0 0 6px;font-size:30px;text-align:center;padding:0}
-.login-sub{color:rgba(255,255,255,.75);font-size:14px;margin:0 0 22px}
-.login-card label{display:block;text-align:left;color:#fff;font-weight:700;font-size:13px;margin:12px 0 6px}
-.login-card input{width:100%;padding:12px 14px;border:none;border-radius:10px;font-size:14px;
-  background:#fff;color:#223;box-sizing:border-box}
-.login-card input:focus{outline:3px solid rgba(37,226,204,.6)}
-.login-btn{width:100%;margin-top:22px;background:var(--teal);color:var(--dark);font-size:15px;
-  padding:13px;border-radius:12px;font-weight:800}
-.login-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-2px);
-  box-shadow:0 10px 22px rgba(37,226,204,.4)}
-#login-err .msg{margin:12px 0 0;text-align:left}
 
 /* ===== Badge de rôle & déconnexion ===== */
 .role-badge{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:#fff;
