@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogiPlan — Connexion</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23003D5B'/%3E%3Crect x='12' y='32' width='9' height='20' rx='2' fill='%2325E2CC'/%3E%3Crect x='27' y='20' width='9' height='32' rx='2' fill='%23ffffff'/%3E%3Crect x='42' y='12' width='9' height='40' rx='2' fill='%2325E2CC'/%3E%3C/svg%3E">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(160deg,#01253a 0%,#013a57 50%,#01253a 100%);
+  font-family:'Segoe UI',Roboto,Arial,sans-serif;padding:20px;overflow:auto}
+.card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border-radius:24px;padding:42px 38px;width:min(420px,94vw);
+  box-shadow:0 24px 70px rgba(0,0,0,.5);text-align:center}
+.ico{width:92px;height:92px;margin:0 auto 20px;background:#25E2CC;border-radius:26px;
+  display:flex;align-items:center;justify-content:center;font-size:42px;
+  box-shadow:0 10px 30px rgba(37,226,204,.35)}
+h1{color:#fff;font-size:30px;margin-bottom:6px}
+.sub{color:rgba(255,255,255,.75);font-size:14px;margin-bottom:22px}
+label{display:block;text-align:left;color:#fff;font-weight:700;font-size:13px;margin:12px 0 6px}
+input{width:100%;padding:12px 14px;border:none;border-radius:10px;font-size:14px;
+  background:#fff;color:#223}
+input:focus{outline:3px solid rgba(37,226,204,.6)}
+button{width:100%;margin-top:22px;background:#25E2CC;color:#002032;font-size:15px;
+  padding:13px;border:none;border-radius:12px;font-weight:800;cursor:pointer;transition:.2s}
+button:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-2px);
+  box-shadow:0 10px 22px rgba(37,226,204,.4)}
+button:disabled{opacity:.6;cursor:wait}
+.msg{background:#ffe3e3;color:#a11;padding:9px 12px;border-radius:9px;font-size:12.5px;
+  margin-top:12px;text-align:left}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="ico">👤</div>
+    <h1>LogiPlan</h1>
+    <p class="sub">Veuillez vous connecter pour accéder à l'application.</p>
+    <label for="u">Nom d'utilisateur</label>
+    <input id="u" autocomplete="username" autofocus>
+    <label for="p">Mot de passe</label>
+    <input id="p" type="password" autocomplete="current-password">
+    <button id="btn">Se connecter</button>
+    <div id="err"></div>
+  </div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function doLogin(){
+  const err = $('#err'); err.innerHTML = '';
+  const u = $('#u').value.trim(), p = $('#p').value;
+  if (!u || !p){ err.innerHTML = '<div class="msg">Renseignez le nom d\'utilisateur et le mot de passe.</div>'; return; }
+  const btn = $('#btn'); btn.disabled = true; btn.textContent = 'Connexion…';
+  try {
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: u, password: p})});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok){
+      err.innerHTML = `<div class="msg">❌ ${esc(d.error || 'Identifiants incorrects')}</div>`;
+      btn.disabled = false; btn.textContent = 'Se connecter';
+      return;
+    }
+    window.location.href = '/';   // la session est ouverte → le serveur livre l'application
+  } catch(e){
+    err.innerHTML = '<div class="msg">❌ Connexion au serveur impossible.</div>';
+    btn.disabled = false; btn.textContent = 'Se connecter';
+  }
+}
+ $('#btn').addEventListener('click', doLogin);
+ $('#u').addEventListener('keydown', e => { if (e.key === 'Enter') $('#p').focus(); });
+ $('#p').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+</script>
+</body>
+</html>
