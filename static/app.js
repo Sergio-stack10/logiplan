@@ -67,35 +67,39 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
-/* ================= AUTHENTIFICATION ================= */
-function showLogin(){ const o = $('#login-overlay'); if (o) o.classList.remove('hidden'); }
-function hideLogin(){ const o = $('#login-overlay'); if (o) o.classList.add('hidden'); }
+/* ================= AUTHENTIFICATION (page dédiée) ================= */
+function showLogin(){
+  document.body.classList.add('logged-out');
+  const u = $('#login-user'); if (u) setTimeout(() => u.focus(), 120);
+}
+function hideLogin(){ document.body.classList.remove('logged-out'); }
 function applyRoleUI(){
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', ROLE === 'viewer'));
   const b = $('#role-badge');
   if (b) b.innerHTML = ROLE === 'admin' ? '🛡️ Admin' : '👁️ Visualiseur';
   ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = (ROLE === 'viewer'); });
 }
-let loginRole = null;
- $$('.role-btn').forEach(b => on(b, 'click', () => {
-  $$('.role-btn').forEach(x => x.classList.remove('selected'));
-  b.classList.add('selected'); loginRole = b.dataset.role;
-  $('#login-pwd').focus();
-}));
 async function doLogin(){
-  const errEl = $('#login-err'); errEl.innerHTML = '';
-  if (!loginRole){ errEl.innerHTML = '<div class="msg err">Choisissez d\'abord un profil.</div>'; return; }
+  const errEl = $('#login-err'); if (errEl) errEl.innerHTML = '';
+  const user = ($('#login-user').value || '').trim();
+  const pwd = $('#login-pwd').value || '';
+  if (!user || !pwd){
+    if (errEl) errEl.innerHTML = '<div class="msg err">Renseignez le nom d\'utilisateur et le mot de passe.</div>';
+    return;
+  }
   busy($('#btn-login'), true, 'Connexion…');
   try {
     const r = await api('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({role: loginRole, password: $('#login-pwd').value})});
+      body: JSON.stringify({username: user, password: pwd})});
     ROLE = r.role; hideLogin(); applyRoleUI();
     await startApp();
-    if (ROLE === 'admin' && r.using_defaults !== undefined) { /* géré côté /api/me */ }
-  } catch(e){ errEl.innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+  } catch(e){
+    if (errEl) errEl.innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`;
+  }
   busy($('#btn-login'), false);
 }
 on('#btn-login', 'click', doLogin);
+on('#login-user', 'keydown', e => { if (e.key === 'Enter') $('#login-pwd').focus(); });
 on('#login-pwd', 'keydown', e => { if (e.key === 'Enter') doLogin(); });
 on('#btn-logout', 'click', async () => {
   try { await api('/api/logout', {method:'POST'}); } catch(e){}
@@ -649,7 +653,7 @@ async function startApp(){
     if (me.role){
       ROLE = me.role; hideLogin(); applyRoleUI();
       if (me.using_defaults && me.role === 'admin')
-        setTimeout(() => toast('⚠️ Mots de passe par défaut actifs — définissez ADMIN_PASSWORD et VIEWER_PASSWORD dans Render → Environment', 'warn'), 1800);
+        setTimeout(() => toast('⚠️ Mots de passe par défaut actifs — définissez ADMIN_USER / ADMIN_PASSWORD / VIEWER_USER / VIEWER_PASSWORD dans Render → Environment', 'warn'), 1800);
       await startApp();
     } else {
       showLogin();
