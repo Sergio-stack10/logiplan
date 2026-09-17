@@ -58,9 +58,9 @@ JOURS_ABR = {'Lundi': 'lun.', 'Mardi': 'mar.', 'Mercredi': 'mer.', 'Jeudi': 'jeu
              'Vendredi': 'ven.', 'Samedi': 'sam.', 'Dimanche': 'dim.'}
 BASE_COLS = ['TRANSPORT', 'WORKDAY ID', 'Paid ID', 'Nom', 'Projet', 'Statut']
 COLONNES_OBLIGATOIRES = BASE_COLS
-ENTITES = ["HORS PROD", "PROD / PLANIFIÉ PROD"]
+ENTITES = ["HORS PROD", "PROD / PLANIFIÉ"]
 ENTITES_MAIN = ENTITES
-ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ PROD": "#548235"}
+ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
 # ================= PERSISTANCE MONGODB =================
@@ -86,7 +86,7 @@ def alpha_prefix(mat):
     return m.group(0) if m else ""
 
 def entity_for_prefix(p):
-    return "PROD / PLANIFIÉ PROD" if (p.startswith("W") or p == "ST") else "HORS PROD"
+    return "PROD / PLANIFIÉ" if (p.startswith("W") or p == "ST") else "HORS PROD"
 
 def entity_for(mat):
     return entity_for_prefix(alpha_prefix(mat))
@@ -349,7 +349,7 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
         p["Entite"] = p["Paid ID"].apply(entity_for)
         for j in jours:
             if f"{j}_Flag" in p.columns:
-                g = p[(p[f"{j}_Flag"] == 1) & (p["Entite"] == "PROD / PLANIFIÉ PROD")]
+                g = p[(p[f"{j}_Flag"] == 1) & (p["Entite"] == "PROD / PLANIFIÉ")]
                 planned_prod_ids[j] |= set(g["Paid ID"])
     planned_prod = {j: (_to_int(theo[j]) if j in theo else len(planned_prod_ids[j])) for j in jours}
     planned_horsprod = {j: _to_int(presta.get(j, 0)) for j in jours}
@@ -368,7 +368,7 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
             melted["Entite"] = melted["Paid ID"].apply(entity_for)
             melted["Menu"] = melted["Brut"].apply(clean_menu_label)
             keep = melted.apply(
-                lambda r: (r["Entite"] != "PROD / PLANIFIÉ PROD")
+                lambda r: (r["Entite"] != "PROD / PLANIFIÉ")
                           or (r["Paid ID"] in planned_prod_ids.get(r["Jour"], set())), axis=1)
             melted = melted[keep]
 
@@ -384,7 +384,7 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
         menu_list = [m for m, _ in sorted(day_menu_totals.get(j, {}).items(), key=lambda kv: (-kv[1], kv[0]))]
         taux = _to_float(taux_by_day.get(j, 0))
         for ent in ENTITES:
-            is_prod = (ent == "PROD / PLANIFIÉ PROD")
+            is_prod = (ent == "PROD / PLANIFIÉ")
             facteur = (1.0 - taux / 100.0) if is_prod else 1.0
             planned = planned_prod[j] if is_prod else planned_horsprod[j]
             ent_menus = [(m, menus_cnt.get((j, ent, m), 0)) for m in menu_list]
