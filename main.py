@@ -10,27 +10,23 @@ app.json.sort_keys = False
 JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 BASE_COLS = ['TRANSPORT', 'WORKDAY ID', 'Paid ID', 'Nom', 'Projet', 'Statut']
 COLONNES_OBLIGATOIRES = BASE_COLS
-# Deux blocs uniquement : HORS PROD (ex-PRESTA + SUPPORT + SAI) et PROD / PLANIFIÉ PROD
 ENTITES = ["HORS PROD", "PROD / PLANIFIÉ PROD"]
 ENTITES_MAIN = ENTITES
 ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ PROD": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
 # ================= RÈGLES MÉTIER ENTITÉ =================
-# Préfixe commençant par « W » ou égal à « ST » -> PROD ; tout le reste -> HORS PROD
-PROD_PREFIXES = ("W", "ST")
-
+# Préfixe alphabétique commençant par « W » OU égal à « ST » -> PROD ; tout le reste -> HORS PROD
 def alpha_prefix(mat):
-    """Lettres initiales du matricule : W00292->'W', WL0001->'WL', ST2015->'ST', SAI-01->'SAI'."""
     m = re.match(r'^[A-Z]+', str(mat).strip().upper())
     return m.group(0) if m else ""
 
-def entity_for(mat):
-    p = alpha_prefix(mat)
+def entity_for_prefix(p):
+    # p est DÉJÀ le préfixe alphabétique (W, WL, ST, SAI, ATOM…) — aucun recalcul
     return "PROD / PLANIFIÉ PROD" if (p.startswith("W") or p == "ST") else "HORS PROD"
 
-def is_prod_entity(ent):
-    return ent == "PROD / PLANIFIÉ PROD"
+def entity_for(mat):
+    return entity_for_prefix(alpha_prefix(mat))
 
 # ================= NORMALISATION DES IDENTIFIANTS =================
 def clean_id(x):
@@ -93,12 +89,14 @@ def current_data():
     if not isinstance(cmd, pd.DataFrame) or cmd.empty: cmd = None
     return week, pl, cmd
 
-def get_presta_effectifs(week):
-    """Prestataires (Hors Planning) saisis sur la page Effectifs (stockés au calcul)."""
+def get_effectifs_refs(week):
+    """Références stockées par la page Effectifs : Total Théorique + Prestataires hors planning."""
     calc = STATE['calculs'].get(week) if week else None
-    if isinstance(calc, dict) and isinstance(calc.get('presta'), dict):
-        return calc['presta']
-    return None
+    if not isinstance(calc, dict):
+        return None, None
+    theo = calc.get('theorique') if isinstance(calc.get('theorique'), dict) else None
+    presta = calc.get('presta') if isinstance(calc.get('presta'), dict) else None
+    return theo, presta
 
 def _to_float(v, default=0.0):
     try:
@@ -237,17 +235,18 @@ def derive_week_dates(week_key):
         pass
     return {}
 
-def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, presta_effectifs):
-    """Logique Recap (2 blocs) :
-    - Entité : préfixe commençant par « W » ou « ST » -> PROD ; tout le reste -> HORS PROD.
-    - HORS PROD : Planifié = « Prestataires (Hors Planning) » de la page Effectifs.
-      PROD : Planifié = planifiés du planning (préfixes ST/W).
-    - Nombres = commandes du jour (les PROD non planifiées ne sont pas comptées).
-    - SANS CHOIX = Planifié − total des menus (inclut les « Je ne serai pas présent »).
-    - À commander = Nombres × (1 − absence prévue) pour PROD uniquement ; HORS PROD = Nombres.
-    - Total (Nombres) = Planifié, dans tous les cas."""
-    # Planifiés PROD depuis le planning
-    planned_prod = {j: set() for j in jours}
+def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs, presta_effectifs):
+    """Logique Recap (référence = page Effectifs) :
+    - HORS PROD : Planifié = « Prestataires (Hors Planning) » (page Effectifs).
+    - PROD : Planifié = « Total Théorique » (page Effectifs) ; fallback = planning (préfixes W/ST).
+    - Nombres = commandes du jour (commandes PROD de non-planifiées exclues).
+    - SANS CHOIX = Planifié − somme des Nombres (inclut « Je ne serai pas présent »).
+    - À commander = Nombres × (1 − absence prévue) pour PROD ; HORS PROD = Nombres.
+    - Absences déclarées (PROD) = round(Planifié × absence prévue) ; HORS PROD = 0."""
+    theo = theo_effectifs or {}
+    presta = presta_effectifs or {}
+
+    planned_prod_fallback = {j: 0 for j in jours}
     if planning_df is not None and not planning_df.empty:
         p = planning_df.copy()
         p["Paid ID"] = p["Paid ID"].apply(clean_id)
@@ -256,12 +255,11 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, presta_effectif
         for j in jours:
             if f"{j}_Flag" in p.columns:
                 g = p[(p[f"{j}_Flag"] == 1) & (p["Entite"] == "PROD / PLANIFIÉ PROD")]
-                planned_prod[j] |= set(g["Paid ID"])
-    # Planifiés HORS PROD depuis la page Effectifs
-    presta = presta_effectifs or {}
+                planned_prod_fallback[j] = len(g)
+    # Source prioritaire : Total Théorique stocké par la page Effectifs
+    planned_prod = {j: (_to_int(theo[j]) if j in theo else planned_prod_fallback[j]) for j in jours}
     planned_horsprod = {j: _to_int(presta.get(j, 0)) for j in jours}
 
-    # Commandes par jour
     melted = pd.DataFrame()
     if cmd_df is not None and not cmd_df.empty:
         c = cmd_df.copy()
@@ -275,10 +273,10 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, presta_effectif
             melted = melted[melted["Brut"] != ""]
             melted["Entite"] = melted["Paid ID"].apply(entity_for)
             melted["Menu"] = melted["Brut"].apply(clean_menu_label)
-            # Règle : PROD non planifié ce jour => non comptabilisé (HORS PROD toujours compté)
             keep = melted.apply(
                 lambda r: (r["Entite"] != "PROD / PLANIFIÉ PROD")
-                          or (r["Paid ID"] in planned_prod.get(r["Jour"], set())), axis=1)
+                          or (r["Paid ID"] in planned_prod_fallback.get(r["Jour"], set())
+                              or planned_prod.get(r["Jour"], 0) > 0), axis=1)
             melted = melted[keep]
 
     menus_cnt, day_menu_totals = {}, {}
@@ -293,9 +291,9 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, presta_effectif
         menu_list = [m for m, _ in sorted(day_menu_totals.get(j, {}).items(), key=lambda kv: (-kv[1], kv[0]))]
         taux = _to_float(taux_by_day.get(j, 0))
         for ent in ENTITES:
-            is_prod = is_prod_entity(ent)
+            is_prod = (ent == "PROD / PLANIFIÉ PROD")
             facteur = (1.0 - taux / 100.0) if is_prod else 1.0
-            planned = len(planned_prod[j]) if is_prod else planned_horsprod[j]
+            planned = planned_prod[j] if is_prod else planned_horsprod[j]
             ent_menus = [(m, menus_cnt.get((j, ent, m), 0)) for m in menu_list]
             total_menus = sum(n for _, n in ent_menus)
             sans_choix = planned - total_menus
@@ -313,7 +311,7 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, presta_effectif
             abs_prevues = int(round(planned * taux / 100.0)) if is_prod else 0
             recap[(j, ent)] = {"df": pd.DataFrame(rows), "planned_n": planned,
                                "sans_choix": sans_choix, "abs_prevues": abs_prevues,
-                               "total_n": planned, "total_ac": total_ac}
+                               "total_ac": total_ac}
         day_totals[j] = sum(recap[(j, e)]["total_ac"] for e in ENTITES_MAIN)
     return recap, day_totals
 
@@ -604,7 +602,8 @@ def api_import():
     prev_calc = STATE['calculs'].get(week) if isinstance(STATE['calculs'].get(week), dict) else {}
     STATE['plannings'][week] = planning_df
     STATE['calculs'][week] = {}
-    if isinstance(prev_calc.get('presta'), dict): STATE['calculs'][week]['presta'] = prev_calc['presta']
+    for k in ('theorique', 'presta'):
+        if isinstance(prev_calc.get(k), dict): STATE['calculs'][week][k] = prev_calc[k]
     if isinstance(prev_calc.get('conf'), pd.DataFrame): STATE['calculs'][week]['conf'] = prev_calc['conf']
     cmd_f = request.files.get('commande')
     if cmd_f:
@@ -670,10 +669,12 @@ def api_export_page1():
             disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
     return dl(excel_bytes(_apply_filters(disp)), 'planning_regroupé.xlsx')
 
-def _store_presta(week, prest_list):
-    if week:
-        STATE['calculs'].setdefault(week, {})['presta'] = {j: _to_int(n) for j, n in zip(JOURS, prest_list)}
-        save_state()
+def _store_effectifs_refs(week, prest_list):
+    """Mémorise Prestataires (Hors Planning) ET Total Théorique pour la page Commandes par menu."""
+    if not week: return
+    calc = STATE['calculs'].setdefault(week, {})
+    calc['presta'] = {j: _to_int(n) for j, n in zip(JOURS, prest_list)}
+    return calc
 
 @app.get('/api/page2')
 def api_page2():
@@ -683,8 +684,13 @@ def api_page2():
     if pl.empty: return {'rows': [], 'metrics': {j: 0 for j in JOURS}}
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
-    _store_presta(week, prest)   # stocké pour la page Commandes par menu
     pivot = build_pivot(pl, taux, prest)
+    # Mémorisation des références pour la page Commandes par menu
+    calc = STATE['calculs'].setdefault(week, {})
+    calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
+    tt = pivot[pivot['Projet'] == 'Total Théorique']
+    calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
+    save_state()
     p = df_payload(pivot)
     tot = pivot[pivot['Projet'] == 'Total à commander']
     p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
@@ -697,8 +703,13 @@ def api_export_page2():
     pl = _apply_filters(pl)
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
-    _store_presta(week, prest)   # stocké aussi à l'export
-    return dl(excel_bytes(build_pivot(pl, taux, prest)), 'effectifs.xlsx')
+    pivot = build_pivot(pl, taux, prest)
+    calc = STATE['calculs'].setdefault(week, {})
+    calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
+    tt = pivot[pivot['Projet'] == 'Total Théorique']
+    calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
+    save_state()
+    return dl(excel_bytes(pivot), 'effectifs.xlsx')
 
 @app.get('/api/page3')
 def api_page3():
@@ -750,13 +761,13 @@ def api_export_conf():
 
 @app.get('/api/prefixes')
 def api_prefixes():
-    """Correspondance automatique en lecture seule : W*/ST -> PROD, reste -> HORS PROD."""
+    """Correspondance automatique en lecture seule : W* / ST -> PROD, tout le reste -> HORS PROD."""
     try:
         week, pl, cmd = current_data()
         ids = safe_paid_ids(cmd) | safe_paid_ids(pl)
         prefixes = sorted({alpha_prefix(i) for i in ids if alpha_prefix(i)})
         return {'entities': ENTITES,
-                'prefixes': [{'prefix': p, 'entity': entity_for(p + 'X')} for p in prefixes]}
+                'prefixes': [{'prefix': p, 'entity': entity_for_prefix(p)} for p in prefixes]}
     except Exception as e:
         app.logger.exception("api_prefixes")
         return jsonify({'error': f"Correspondance impossible : {e}"}), 400
@@ -765,15 +776,22 @@ def _recap_compute(body):
     week, pl, cmd = current_data()
     raw_taux = body.get('taux') or {}
     taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
-    presta_effectifs = get_presta_effectifs(week)
-    recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, presta_effectifs)
-    return week, pl, cmd, recap, day_totals, presta_effectifs
+    theo, presta = get_effectifs_refs(week)
+    recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta)
+    warnings = []
+    if theo is None:
+        warnings.append("Total Théorique introuvable : calculez d'abord la page Effectifs (onglet 2). "
+                        "Planifié PROD = recalcul depuis le planning en attendant.")
+    if presta is None:
+        warnings.append("Prestataires (Hors Planning) non renseignés : Planifié HORS PROD = 0. "
+                        "Renseignez-les sur la page Effectifs (onglet 2) puis recalculez.")
+    return week, pl, cmd, recap, day_totals, theo, presta, warnings
 
 @app.post('/api/recap')
 def api_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
-        week, pl, cmd, recap, day_totals, presta_effectifs = _recap_compute(body)
+        week, pl, cmd, recap, day_totals, theo, presta, warnings = _recap_compute(body)
         if cmd is None:
             return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes dans la barre latérale."}), 400
         dates = derive_week_dates(week)
@@ -805,7 +823,8 @@ def api_recap():
             total[k] = sum(r[k] for r in summary)
         summary.append(total)
         return {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
-                'has_planning': pl is not None, 'has_presta': presta_effectifs is not None}
+                'has_planning': pl is not None, 'has_theo': theo is not None,
+                'has_presta': presta is not None, 'warnings': warnings}
     except Exception as e:
         app.logger.exception("api_recap")
         return jsonify({'error': f"Erreur de calcul : {type(e).__name__} — {e}"}), 400
@@ -814,7 +833,7 @@ def api_recap():
 def api_export_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
-        week, pl, cmd, recap, _, _ = _recap_compute(body)
+        week, pl, cmd, recap, _, _, _, _ = _recap_compute(body)
         if cmd is None: return jsonify({'error': "Aucune commande disponible."}), 400
         export_rows = [{'Jour': j, 'Entité': ent, 'Choix': r['Choix'], 'Nombres': r['Nombres'],
                         'Pourcentage (%)': round(float(r['Pourcentage']), 1), 'À commander': r['À commander']}
