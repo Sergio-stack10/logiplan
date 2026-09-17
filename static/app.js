@@ -1,6 +1,7 @@
 'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
+let ROLE = null;   // 'admin' | 'viewer' | null
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -14,6 +15,7 @@ function toast(text, type='ok'){
 async function api(url, opts={}){
   const r = await fetch(url, opts); let d = {};
   try { d = await r.json(); } catch(e){}
+  if (r.status === 401){ showLogin(); throw new Error(d.error || "Connexion requise"); }
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
 }
@@ -65,6 +67,41 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
+/* ================= AUTHENTIFICATION ================= */
+function showLogin(){ const o = $('#login-overlay'); if (o) o.classList.remove('hidden'); }
+function hideLogin(){ const o = $('#login-overlay'); if (o) o.classList.add('hidden'); }
+function applyRoleUI(){
+  document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', ROLE === 'viewer'));
+  const b = $('#role-badge');
+  if (b) b.innerHTML = ROLE === 'admin' ? '🛡️ Admin' : '👁️ Visualiseur';
+  ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = (ROLE === 'viewer'); });
+}
+let loginRole = null;
+ $$('.role-btn').forEach(b => on(b, 'click', () => {
+  $$('.role-btn').forEach(x => x.classList.remove('selected'));
+  b.classList.add('selected'); loginRole = b.dataset.role;
+  $('#login-pwd').focus();
+}));
+async function doLogin(){
+  const errEl = $('#login-err'); errEl.innerHTML = '';
+  if (!loginRole){ errEl.innerHTML = '<div class="msg err">Choisissez d\'abord un profil.</div>'; return; }
+  busy($('#btn-login'), true, 'Connexion…');
+  try {
+    const r = await api('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({role: loginRole, password: $('#login-pwd').value})});
+    ROLE = r.role; hideLogin(); applyRoleUI();
+    await startApp();
+    if (ROLE === 'admin' && r.using_defaults !== undefined) { /* géré côté /api/me */ }
+  } catch(e){ errEl.innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
+  busy($('#btn-login'), false);
+}
+on('#btn-login', 'click', doLogin);
+on('#login-pwd', 'keydown', e => { if (e.key === 'Enter') doLogin(); });
+on('#btn-logout', 'click', async () => {
+  try { await api('/api/logout', {method:'POST'}); } catch(e){}
+  location.reload();
+});
+
 /* ---------- IndexedDB ---------- */
 function idbOpen(){ return new Promise((res, rej) => {
   const r = indexedDB.open('logiplan', 1);
@@ -79,9 +116,11 @@ async function idbGet(k){ const db = await idbOpen(); return new Promise((res, r
   const tx = db.transaction('kv', 'readonly'); const rq = tx.objectStore('kv').get(k);
   rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });}
 async function saveBackup(){
+  if (ROLE !== 'admin') return;   // seul l'admin alimente la sauvegarde locale
   try { const snap = await api('/api/backup_export'); await idbSet('state', snap); } catch(e){}
 }
 async function restoreIfEmpty(){
+  if (ROLE !== 'admin') return;
   try {
     const s = await api('/api/state');
     if (s.weeks && s.weeks.length) return;
@@ -131,11 +170,10 @@ on('#btn-del-week', 'click', async () => {
   if (!confirm('Supprimer définitivement cette semaine et toutes ses données ?')) return;
   await api('/api/delete_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: $('#sel-week').value})});
   p1Cache.week = undefined;
-  $('#out-p2').innerHTML = ''; $('#out-p3').innerHTML = ''; $('#out-p4').innerHTML = '';
-  $('#out-p5').innerHTML = ''; $('#out-p6').innerHTML = ''; $('#out-p8').innerHTML = '';
+  ['out-p2','out-p3','out-p4','out-p5','out-p6','out-p8'].forEach(id => { const el = $('#'+id); if (el) el.innerHTML = ''; });
   p5Rows = null; p7Rows = null; lastRecapData = null; lastSynData = null;
   await refreshState(); await loadP1(); await saveBackup();
-  toast('Semaine supprimée (données effacées partout)');
+  toast('Semaine supprimée');
 });
 
 async function refreshState(){
@@ -176,7 +214,7 @@ async function autoLoadAll(){
     if (conf && conf.rows){ p5Rows = conf.rows; renderP5(); }
     if (recap && recap.day_order) renderRecap(recap);
     if (syn && syn.rows) renderSynthese(syn);
-    toast('Résultats de la semaine rechargés ✅');
+    if (ROLE === 'admin') toast('Résultats de la semaine rechargés ✅');
   } catch(e){}
 }
 
@@ -374,17 +412,19 @@ function renderRecap(d){
        tableHTML(orderedRows(d.summary_rows, SUMMARY_COLS), {recap:true});
   for (const day of d.day_order){
     const D = d.days[day];
+    const taCtrl = ROLE === 'admin' ?
+      `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7c8a;font-weight:600;white-space:nowrap">
+        Absence prévue (%) — PROD
+        <input type="number" data-dtaux="${esc(day)}" min="0" max="50" step="0.5" value="${tauxByDay[day]}"
+          style="width:74px;padding:6px;border:1px solid #dde5ec;border-radius:8px;text-align:center">
+      </div>` : '';
     h += `<div class="day-card">
       <div class="day-header"><span>📅 ${esc(day)}${D.date ? ' · ' + esc(D.date) : ''}</span>
       <span class="dh-right">Semaine ${esc(d.week)}</span></div>
       <div class="day-sub" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:space-between">
         <div><span class="big">À commander : <b>${D.a_commander}</b> repas</span><br>
         À préparer → ${D.entities.map(e => `<b style="color:${e.color}">${esc(e.entity)} : ${e.rows.find(r => r.Choix==='TOTAL')?.['À commander'] ?? 0}</b>`).join(' &nbsp;•&nbsp; ')}</div>
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7c8a;font-weight:600;white-space:nowrap">
-          Absence prévue (%) — PROD
-          <input type="number" data-dtaux="${esc(day)}" min="0" max="50" step="0.5" value="${tauxByDay[day]}"
-            style="width:74px;padding:6px;border:1px solid #dde5ec;border-radius:8px;text-align:center">
-        </div>
+        ${taCtrl}
       </div>`;
     for (const E of D.entities){
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
@@ -412,6 +452,7 @@ async function calcP6(){
 on('#btn-p6', 'click', calcP6);
 async function downloadPost(url, filename, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (r.status === 401){ showLogin(); throw new Error("Connexion requise"); }
   if (!r.ok){ const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Export impossible'); }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(await r.blob()); a.download = filename; a.click();
@@ -447,7 +488,7 @@ function printIframe(html){
   iframe.srcdoc = html;
 }
 on('#btn-pdf-p6', 'click', () => {
-  if (!lastRecapData){ toast("Calculez d'abord le récapitulatif.", 'warn'); return; }
+  if (!lastRecapData){ toast("Aucun récapitulatif généré pour cette semaine.", 'warn'); return; }
   const d = lastRecapData;
   let h = `<h1>LogiPlan — Commandes par menu · Semaine ${esc(d.week || '')}</h1>
            <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')}</p>`;
@@ -520,17 +561,17 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse mensuelle par dates (demandes 3 & 4) ---------- */
+/* ---------- PAGE 8 : Synthèse mensuelle ---------- */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
 const SYN_EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme'};
-let synEdits = {};        // saisies non encore envoyées {dateIso: {champ: valeur}}
+let synEdits = {};
 let lastSynData = null;
 
 function synthBody(){
   return { month: ($('#inp-month') ? $('#inp-month').value : ''),
-           pu: numVal('inp-pu'), edits: synEdits };
+           pu: numVal('inp-pu'), edits: ROLE === 'admin' ? synEdits : {} };
 }
 function renderSynthese(d){
   lastSynData = d;
@@ -542,7 +583,7 @@ function renderSynthese(d){
     const isTotal = String(r['Date']).toUpperCase().startsWith('TOTAL');
     h += `<tr class="${isTotal ? 'total' : ''}">`;
     SYN_COLS.forEach(c => {
-      if (!isTotal && SYN_EDITABLE[c]){
+      if (!isTotal && SYN_EDITABLE[c] && ROLE === 'admin'){
         h += `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(r.DateIso)}" data-champ="${SYN_EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
       } else if (c.includes('(%)')){
         h += `<td>${fmtPct(r[c])}</td>`;
@@ -567,20 +608,20 @@ async function genSynthese(showToast = true){
   busy($('#btn-p8'), true, 'Calcul…');
   try {
     renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())}));
-    synEdits = {};                    // saisies persistées côté serveur
+    synEdits = {};
     if (showToast) toast('Synthèse générée ✅');
   } catch(e){ $('#out-p8').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; if (showToast) toast(esc(e.message), 'err'); }
   busy($('#btn-p8'), false);
 }
 on('#btn-p8', 'click', () => genSynthese());
-on('#inp-month', 'change', () => genSynthese());
-on('#inp-pu', 'change', debounce(() => genSynthese(false), 500));
+on('#inp-month', 'change', () => { if (ROLE === 'admin') genSynthese(); });
+on('#inp-pu', 'change', debounce(() => { if (ROLE === 'admin') genSynthese(false); }, 500));
 on('#btn-exp-p8', 'click', async () => {
   try { await downloadPost('/api/export_synthese', 'synthese_mensuelle.xlsx', synthBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
 });
 on('#btn-pdf-p8', 'click', () => {
-  if (!lastSynData){ toast("Générez d'abord la synthèse.", 'warn'); return; }
+  if (!lastSynData){ toast("Aucune synthèse générée pour cette semaine.", 'warn'); return; }
   const d = lastSynData;
   let h = `<h1>LogiPlan — Synthèse mensuelle · ${esc(d.month || '')}</h1>
     <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')} · Prix unitaire : ${Number(d.pu).toLocaleString('fr-FR')} MGA HT</p>`;
@@ -598,7 +639,20 @@ tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2p
 });
 
 /* ---------- Démarrage ---------- */
-(async function boot(){
+async function startApp(){
   await restoreIfEmpty();
   try { await refreshState(); await loadP1(); await autoLoadAll(); } catch(e){}
+}
+(async function boot(){
+  try {
+    const me = await api('/api/me');
+    if (me.role){
+      ROLE = me.role; hideLogin(); applyRoleUI();
+      if (me.using_defaults && me.role === 'admin')
+        setTimeout(() => toast('⚠️ Mots de passe par défaut actifs — définissez ADMIN_PASSWORD et VIEWER_PASSWORD dans Render → Environment', 'warn'), 1800);
+      await startApp();
+    } else {
+      showLogin();
+    }
+  } catch(e){ showLogin(); }
 })();
