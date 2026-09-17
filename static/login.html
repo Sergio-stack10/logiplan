@@ -23,11 +23,16 @@ label{display:block;text-align:left;color:#fff;font-weight:700;font-size:13px;ma
 input{width:100%;padding:12px 14px;border:none;border-radius:10px;font-size:14px;
   background:#fff;color:#223}
 input:focus{outline:3px solid rgba(37,226,204,.6)}
-button{width:100%;margin-top:22px;background:#25E2CC;color:#002032;font-size:15px;
+.pwd-wrap{position:relative}
+.pwd-wrap input{padding-right:48px}
+.eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:34px;height:34px;
+  background:transparent;border:none;cursor:pointer;font-size:17px;opacity:.55;line-height:1;padding:0}
+.eye:hover{opacity:1}
+button.login-btn{width:100%;margin-top:22px;background:#25E2CC;color:#002032;font-size:15px;
   padding:13px;border:none;border-radius:12px;font-weight:800;cursor:pointer;transition:.2s}
-button:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-2px);
+button.login-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-2px);
   box-shadow:0 10px 22px rgba(37,226,204,.4)}
-button:disabled{opacity:.6;cursor:wait}
+button.login-btn:disabled{opacity:.6;cursor:wait;transform:none;box-shadow:none}
 .msg{background:#ffe3e3;color:#a11;padding:9px 12px;border-radius:9px;font-size:12.5px;
   margin-top:12px;text-align:left}
 </style>
@@ -40,13 +45,23 @@ button:disabled{opacity:.6;cursor:wait}
     <label for="u">Nom d'utilisateur</label>
     <input id="u" autocomplete="username" autofocus>
     <label for="p">Mot de passe</label>
-    <input id="p" type="password" autocomplete="current-password">
-    <button id="btn">Se connecter</button>
+    <div class="pwd-wrap">
+      <input id="p" type="password" autocomplete="current-password">
+      <button type="button" class="eye" id="eye" title="Afficher / masquer le mot de passe">👁️</button>
+    </div>
+    <button class="login-btn" id="btn">Se connecter</button>
     <div id="err"></div>
   </div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+ $('#eye').addEventListener('click', () => {
+  const p = $('#p');
+  const show = p.type === 'password';
+  p.type = show ? 'text' : 'password';
+  $('#eye').textContent = show ? '🙈' : '👁️';
+  p.focus();
+});
 async function doLogin(){
   const err = $('#err'); err.innerHTML = '';
   const u = $('#u').value.trim(), p = $('#p').value;
@@ -61,7 +76,7 @@ async function doLogin(){
       btn.disabled = false; btn.textContent = 'Se connecter';
       return;
     }
-    window.location.href = '/';   // la session est ouverte → le serveur livre l'application
+    window.location.href = '/';
   } catch(e){
     err.innerHTML = '<div class="msg">❌ Connexion au serveur impossible.</div>';
     btn.disabled = false; btn.textContent = 'Se connecter';
