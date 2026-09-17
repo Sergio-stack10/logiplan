@@ -153,9 +153,9 @@ summary:hover{color:var(--teal)}
 .toast.err{border-left-color:#e74c3c}.toast.warn{border-left-color:#f39c12}
 .toast.out{opacity:0;transform:translateX(30px);transition:all .35s}
 @keyframes slidein{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
-.footer-fix{position:fixed;left:0;bottom:0;width:100%;background:#001a26;color:#A8F3EB;text-align:center;
+.footer-fix{position:fixed;left:0;bottom:0;width:100%;background:#001a26;color:#ffffff;text-align:center;
   font-size:12px;padding:8px;z-index:9998;border-top:2px solid var(--teal)}
-.footer-fix span{color:var(--teal);font-weight:700;letter-spacing:1px}
+.footer-fix span{color:#ffffff;font-weight:700;letter-spacing:1px}
 
 @media (max-width:900px){
   .metrics{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
