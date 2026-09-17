@@ -1,7 +1,7 @@
 'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
-let ROLE = null;   // 'admin' | 'viewer' | null
+let ROLE = null;
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -67,7 +67,7 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
-/* ================= AUTHENTIFICATION (gérée par le serveur) ================= */
+/* ================= RÔLE ================= */
 function applyRoleUI(){
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', ROLE === 'viewer'));
   const b = $('#role-badge');
@@ -76,7 +76,7 @@ function applyRoleUI(){
 }
 on('#btn-logout', 'click', async () => {
   try { await api('/api/logout', {method:'POST'}); } catch(e){}
-  window.location.href = '/';   // le serveur renverra la page de connexion
+  window.location.href = '/';
 });
 
 /* ---------- IndexedDB ---------- */
@@ -93,7 +93,7 @@ async function idbGet(k){ const db = await idbOpen(); return new Promise((res, r
   const tx = db.transaction('kv', 'readonly'); const rq = tx.objectStore('kv').get(k);
   rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });}
 async function saveBackup(){
-  if (ROLE !== 'admin') return;   // seul l'admin alimente la sauvegarde locale
+  if (ROLE !== 'admin') return;
   try { const snap = await api('/api/backup_export'); await idbSet('state', snap); } catch(e){}
 }
 async function restoreIfEmpty(){
@@ -191,7 +191,7 @@ async function autoLoadAll(){
     if (conf && conf.rows){ p5Rows = conf.rows; renderP5(); }
     if (recap && recap.day_order) renderRecap(recap);
     if (syn && syn.rows) renderSynthese(syn);
-    if (ROLE === 'admin') toast('Résultats de la semaine rechargés ✅');
+    toast('Résultats de la semaine rechargés ✅');
   } catch(e){}
 }
 
