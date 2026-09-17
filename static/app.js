@@ -407,7 +407,7 @@ on('#map-search', 'input', debounce(() => {
 }, 200));
 function recapBody(){ return { taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]])) }; }
 const RECAP_COLS = ['Choix','Nombres','Pourcentage','À commander'];
-const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ PROD', 'Planifié total', 'À commander'];
+const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ', 'Planifié total', 'À commander'];
 let lastRecapData = null;
 function renderRecap(d){
   lastRecapData = d;
