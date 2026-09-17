@@ -12,12 +12,39 @@ function toast(text, type='ok'){
   $('#toasts').appendChild(t);
   setTimeout(()=>{ t.classList.add('out'); setTimeout(()=>t.remove(), 350); }, 4500);
 }
+let pendingReqs = 0, loadingTimer = null;
+function showLoadingOverlay(label){
+  let ov = document.getElementById('loading-overlay');
+  if (!ov){
+    ov = document.createElement('div');
+    ov.id = 'loading-overlay';
+    ov.innerHTML = '<div class="load-box"><div class="load-spinner"></div><div class="load-txt">Chargement…</div></div>';
+    document.body.appendChild(ov);
+  }
+  ov.querySelector('.load-txt').textContent = label || 'Chargement des données…';
+  ov.classList.add('active');
+}
+function hideLoadingOverlay(){
+  const ov = document.getElementById('loading-overlay');
+  if (ov) ov.classList.remove('active');
+}
+function trackReq(promise){
+  pendingReqs++;
+  clearTimeout(loadingTimer);
+  loadingTimer = setTimeout(() => { if (pendingReqs > 0) showLoadingOverlay(); }, 300);
+  return promise.finally(() => {
+    pendingReqs = Math.max(0, pendingReqs - 1);
+    if (pendingReqs === 0){ clearTimeout(loadingTimer); hideLoadingOverlay(); }
+  });
+}
 async function api(url, opts={}){
-  const r = await fetch(url, opts); let d = {};
-  try { d = await r.json(); } catch(e){}
-  if (r.status === 401){ window.location.href = '/'; throw new Error("Connexion requise"); }
-  if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-  return d;
+  return trackReq((async () => {
+    const r = await fetch(url, opts); let d = {};
+    try { d = await r.json(); } catch(e){}
+    if (r.status === 401){ window.location.href = '/'; throw new Error("Connexion requise"); }
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    return d;
+  })());
 }
 async function getResult(key){ try { return await api('/api/result/' + key); } catch(e){ return null; } }
 function debounce(fn, ms=250){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
