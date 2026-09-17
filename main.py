@@ -631,10 +631,12 @@ def gzip_json(resp):
 def handle_exception(e):
     app.logger.exception("Erreur serveur LogiPlan")
     if isinstance(e, HTTPException):
+        if e.code == 404 and request.path.startswith('/api/'):
+            return jsonify({'error': f"Route introuvable : {request.path} — vérifiez que main.py est la version complète"}), 404
         return jsonify({'error': e.description}), e.code
     return jsonify({'error': f"Erreur serveur : {type(e).__name__} — {e}"}), 500
 
-# ================= AUTH ROUTES =================
+# ================= ROUTES AUTH =================
 @app.get('/api/me')
 def api_me():
     return {'role': current_role(), 'using_defaults': USING_DEFAULTS}
@@ -657,7 +659,7 @@ def api_logout():
     flask_session.clear()
     return {'ok': True}
 
-# ================= DATA ROUTES =================
+# ================= ACCÈS AUX PAGES =================
 @app.get('/')
 def index():
     if current_role() not in ('admin', 'viewer'):
@@ -669,6 +671,19 @@ def guard_index():
     if current_role() not in ('admin', 'viewer'):
         return send_from_directory(app.static_folder, 'login.html')
     return send_from_directory(app.static_folder, 'index.html')
+
+# ================= ROUTES DATA =================
+@app.get('/api/state')
+@login_required
+def api_state():
+    weeks = sorted(STATE['plannings'].keys())
+    cur = STATE.get('current_week')
+    if cur not in weeks and weeks:
+        cur = weeks[-1]; STATE['current_week'] = cur; save_state()
+    _, pl, cmd = current_data()
+    return {'weeks': weeks, 'current_week': cur,
+            'has_planning': pl is not None, 'has_commande': cmd is not None,
+            'has_reference': isinstance(STATE.get('reference'), pd.DataFrame)}
 
 @app.get('/api/backup_export')
 @login_required
@@ -862,7 +877,7 @@ def api_export_page2():
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
-    if is_admin():   # un viewer extrait sans modifier les références mémorisées
+    if is_admin():
         _save_p2_refs(week, pivot, prest)
         save_state()
     return dl(excel_bytes(pivot), 'effectifs.xlsx')
@@ -1064,7 +1079,6 @@ def _synth_compute(body):
     nxt = datetime.date(year + (mon == 12), (mon % 12) + 1, 1)
     last = nxt - datetime.timedelta(days=1)
 
-    # Un viewer consulte : ni le PU ni les saisies ne sont modifiés par sa requête
     if is_admin():
         if body.get('pu') is not None:
             STATE['synth_pu'] = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
