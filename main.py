@@ -24,7 +24,9 @@ def _load_secret():
 app.secret_key = _load_secret()
 app.permanent_session_lifetime = datetime.timedelta(days=30)
 
+ADMIN_USER = os.environ.get('ADMIN_USER', 'admin')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin')
+VIEWER_USER = os.environ.get('VIEWER_USER', 'viewer')
 VIEWER_PASSWORD = os.environ.get('VIEWER_PASSWORD', 'viewer')
 USING_DEFAULTS = (os.environ.get('ADMIN_PASSWORD') is None or os.environ.get('VIEWER_PASSWORD') is None)
 
@@ -640,14 +642,15 @@ def api_me():
 @app.post('/api/login')
 def api_login():
     d = request.get_json(force=True, silent=True) or {}
-    role = d.get('role'); pwd = str(d.get('password') or '')
-    if role == 'admin' and pwd == ADMIN_PASSWORD:
+    user = str(d.get('username') or '').strip().lower()
+    pwd = str(d.get('password') or '')
+    if user == ADMIN_USER.lower() and pwd == ADMIN_PASSWORD:
         flask_session['role'] = 'admin'; flask_session.permanent = True
         return {'ok': True, 'role': 'admin'}
-    if role == 'viewer' and pwd == VIEWER_PASSWORD:
+    if user == VIEWER_USER.lower() and pwd == VIEWER_PASSWORD:
         flask_session['role'] = 'viewer'; flask_session.permanent = True
         return {'ok': True, 'role': 'viewer'}
-    return jsonify({'error': "Mot de passe incorrect pour ce profil"}), 401
+    return jsonify({'error': "Nom d'utilisateur ou mot de passe incorrect"}), 401
 
 @app.post('/api/logout')
 def api_logout():
