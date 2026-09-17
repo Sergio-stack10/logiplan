@@ -1,4 +1,4 @@
-import os, io, re, pickle, datetime, unicodedata
+import os, io, re, pickle, datetime, unicodedata, gzip
 import pandas as pd
 import numpy as np
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -16,13 +16,12 @@ ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ PROD": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
 # ================= RÈGLES MÉTIER ENTITÉ =================
-# Préfixe alphabétique commençant par « W » OU égal à « ST » -> PROD ; tout le reste -> HORS PROD
 def alpha_prefix(mat):
     m = re.match(r'^[A-Z]+', str(mat).strip().upper())
     return m.group(0) if m else ""
 
 def entity_for_prefix(p):
-    # p est DÉJÀ le préfixe alphabétique (W, WL, ST, SAI, ATOM…) — aucun recalcul
+    # p est DÉJÀ le préfixe alphabétique (W, WL, ST, SAI, ATOM…)
     return "PROD / PLANIFIÉ PROD" if (p.startswith("W") or p == "ST") else "HORS PROD"
 
 def entity_for(mat):
@@ -90,7 +89,6 @@ def current_data():
     return week, pl, cmd
 
 def get_effectifs_refs(week):
-    """Références stockées par la page Effectifs : Total Théorique + Prestataires hors planning."""
     calc = STATE['calculs'].get(week) if week else None
     if not isinstance(calc, dict):
         return None, None
@@ -236,17 +234,14 @@ def derive_week_dates(week_key):
     return {}
 
 def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs, presta_effectifs):
-    """Logique Recap (référence = page Effectifs) :
-    - HORS PROD : Planifié = « Prestataires (Hors Planning) » (page Effectifs).
-    - PROD : Planifié = « Total Théorique » (page Effectifs) ; fallback = planning (préfixes W/ST).
-    - Nombres = commandes du jour (commandes PROD de non-planifiées exclues).
-    - SANS CHOIX = Planifié − somme des Nombres (inclut « Je ne serai pas présent »).
-    - À commander = Nombres × (1 − absence prévue) pour PROD ; HORS PROD = Nombres.
-    - Absences déclarées (PROD) = round(Planifié × absence prévue) ; HORS PROD = 0."""
+    """HORS PROD : Planifié = Prestataires (Hors Planning) de la page Effectifs.
+    PROD : Planifié = Total Théorique (page Effectifs), fallback = planning (W*/ST).
+    SANS CHOIX = Planifié − somme des Nombres. À commander = Nombres × (1 − absence prévue) PROD seul."""
     theo = theo_effectifs or {}
     presta = presta_effectifs or {}
 
-    planned_prod_fallback = {j: 0 for j in jours}
+    # Set d'IDs (tests d'appartenance) + compteur (affichage) : structures séparées
+    planned_prod_ids = {j: set() for j in jours}
     if planning_df is not None and not planning_df.empty:
         p = planning_df.copy()
         p["Paid ID"] = p["Paid ID"].apply(clean_id)
@@ -255,8 +250,8 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
         for j in jours:
             if f"{j}_Flag" in p.columns:
                 g = p[(p[f"{j}_Flag"] == 1) & (p["Entite"] == "PROD / PLANIFIÉ PROD")]
-                planned_prod_fallback[j] = len(g)
-    # Source prioritaire : Total Théorique stocké par la page Effectifs
+                planned_prod_ids[j] |= set(g["Paid ID"])
+    planned_prod_fallback = {j: len(planned_prod_ids[j]) for j in jours}
     planned_prod = {j: (_to_int(theo[j]) if j in theo else planned_prod_fallback[j]) for j in jours}
     planned_horsprod = {j: _to_int(presta.get(j, 0)) for j in jours}
 
@@ -273,10 +268,10 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
             melted = melted[melted["Brut"] != ""]
             melted["Entite"] = melted["Paid ID"].apply(entity_for)
             melted["Menu"] = melted["Brut"].apply(clean_menu_label)
+            # PROD non planifiée ce jour => non comptabilisée (test sur le SET, plus jamais sur un int)
             keep = melted.apply(
                 lambda r: (r["Entite"] != "PROD / PLANIFIÉ PROD")
-                          or (r["Paid ID"] in planned_prod_fallback.get(r["Jour"], set())
-                              or planned_prod.get(r["Jour"], 0) > 0), axis=1)
+                          or (r["Paid ID"] in planned_prod_ids.get(r["Jour"], set())), axis=1)
             melted = melted[keep]
 
     menus_cnt, day_menu_totals = {}, {}
@@ -343,6 +338,15 @@ def df_payload(df):
     cols = [str(c) for c in df.columns]
     rows = [{str(c): jsonable(v) for c, v in rec.items()} for rec in df.to_dict('records')]
     return {'columns': cols, 'rows': rows}
+
+def df_from_payload(d):
+    if not (isinstance(d, dict) and d.get('columns') and isinstance(d.get('rows'), list)):
+        return None
+    if not d['rows']:
+        return None
+    df = pd.DataFrame(d['rows'])
+    cols = [c for c in d['columns'] if c in df.columns]
+    return df[cols]
 
 def enforce_cols(df, order):
     for c in order:
@@ -509,6 +513,9 @@ def build_conf(pl, cmd):
     cmd['Paid ID'] = cmd['Paid ID'].apply(clean_id)
     pl = pl[pl['Paid ID'] != '']
     cmd = cmd[cmd['Paid ID'] != '']
+    # Dédoublonnage : une seule ligne par matricule de chaque côté (évite toute explosion de fusion)
+    pl = pl.drop_duplicates(subset=['Paid ID'], keep='first')
+    cmd = cmd.drop_duplicates(subset=['Paid ID'], keep='first')
     merged = pd.merge(pl, cmd, on='Paid ID', how='outer')
     display_rows = []
     for _, row in merged.iterrows():
@@ -559,6 +566,23 @@ def dl(buf, filename):
     return send_file(buf, download_name=filename,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+# ================= COMPRESSION GZIP (perf n°3) =================
+@app.after_request
+def gzip_json(resp):
+    try:
+        if (resp.status_code == 200
+                and resp.content_type and resp.content_type.startswith('application/json')
+                and 'gzip' in (request.headers.get('Accept-Encoding') or '')):
+            data = resp.get_data()
+            if len(data) > 1024:
+                resp.direct_passthrough = False
+                resp.set_data(gzip.compress(data))
+                resp.headers['Content-Encoding'] = 'gzip'
+                resp.headers['Content-Length'] = str(len(resp.get_data()))
+    except Exception:
+        pass
+    return resp
+
 # ================= GESTIONNAIRE D'ERREURS =================
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -582,6 +606,59 @@ def api_state():
     return {'weeks': weeks, 'current_week': cur,
             'has_planning': pl is not None, 'has_commande': cmd is not None,
             'has_reference': isinstance(STATE.get('reference'), pd.DataFrame)}
+
+# ---------- SAUVEGARDE / RESTAURATION (persistance n°4) ----------
+@app.get('/api/backup_export')
+def api_backup_export():
+    def dfd(d):
+        return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
+    plannings = {w: dfd(df) for w, df in STATE['plannings'].items()}
+    commandes = {w: dfd(df) for w, df in STATE['commandes'].items() if isinstance(df, pd.DataFrame)}
+    ref = dfd(STATE.get('reference')) if isinstance(STATE.get('reference'), pd.DataFrame) else None
+    calculs = {}
+    for w, c in STATE['calculs'].items():
+        if isinstance(c, dict):
+            calculs[w] = {k: c[k] for k in ('presta', 'theorique') if isinstance(c.get(k), dict)}
+    return {'plannings': plannings, 'commandes': commandes, 'reference': ref,
+            'calculs': calculs, 'current_week': STATE.get('current_week')}
+
+@app.post('/api/backup_import')
+def api_backup_import():
+    try:
+        b = request.get_json(force=True, silent=True) or {}
+        plannings = {}
+        for w, d in (b.get('plannings') or {}).items():
+            df = df_from_payload(d)
+            if df is None: continue
+            for j in JOURS:
+                if f'{j}_Flag' in df.columns:
+                    df[f'{j}_Flag'] = pd.to_numeric(df[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
+            if planning_valide(df): plannings[w] = df
+        commandes = {}
+        for w, d in (b.get('commandes') or {}).items():
+            df = df_from_payload(d)
+            if df is None or 'Paid ID' not in df.columns: continue
+            df['Paid ID'] = df['Paid ID'].apply(clean_id)
+            df = df[df['Paid ID'] != '']
+            if not df.empty: commandes[w] = df
+        ref = df_from_payload(b.get('reference'))
+        if ref is not None and not {'WORKDAY ID', 'REF_PAID_ID'}.issubset(ref.columns):
+            ref = None
+        calculs = {}
+        for w, c in (b.get('calculs') or {}).items():
+            if isinstance(c, dict):
+                calculs[w] = {k: v for k, v in c.items() if k in ('presta', 'theorique') and isinstance(v, dict)}
+        STATE['plannings'] = plannings
+        STATE['commandes'] = commandes
+        STATE['reference'] = ref
+        STATE['calculs'] = calculs
+        cw = b.get('current_week')
+        STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
+        save_state()
+        return {'ok': True, 'weeks': sorted(plannings.keys())}
+    except Exception as e:
+        app.logger.exception("backup_import")
+        return jsonify({'error': f"Restauration impossible : {e}"}), 400
 
 @app.post('/api/import')
 def api_import():
@@ -652,10 +729,9 @@ def api_page1():
         for suf in ('_DE', '_A', '_Pause'):
             disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
         disp[f'{j}_Flag'] = pd.to_numeric(disp[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
-    filtered = _apply_filters(disp)
-    p = df_payload(filtered)
+    p = df_payload(disp)
     p['options'] = {c: sorted(pl[c].astype(str).unique().tolist()) for c in ('TRANSPORT', 'Projet', 'Statut')}
-    p['week'] = week; p['total'] = len(disp); p['shown'] = len(filtered)
+    p['week'] = week; p['total'] = len(disp); p['shown'] = len(disp)
     return p
 
 @app.get('/api/export_page1')
@@ -669,13 +745,6 @@ def api_export_page1():
             disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
     return dl(excel_bytes(_apply_filters(disp)), 'planning_regroupé.xlsx')
 
-def _store_effectifs_refs(week, prest_list):
-    """Mémorise Prestataires (Hors Planning) ET Total Théorique pour la page Commandes par menu."""
-    if not week: return
-    calc = STATE['calculs'].setdefault(week, {})
-    calc['presta'] = {j: _to_int(n) for j, n in zip(JOURS, prest_list)}
-    return calc
-
 @app.get('/api/page2')
 def api_page2():
     week, pl, _ = current_data()
@@ -685,7 +754,6 @@ def api_page2():
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
-    # Mémorisation des références pour la page Commandes par menu
     calc = STATE['calculs'].setdefault(week, {})
     calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
     tt = pivot[pivot['Projet'] == 'Total Théorique']
@@ -744,13 +812,17 @@ def api_export_page4():
 
 @app.post('/api/page5')
 def api_page5():
-    week, pl, cmd = current_data()
-    if pl is None: return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
-    if cmd is None: return jsonify({'error': "Importez le fichier Commandes dans la barre latérale."}), 400
-    conf = build_conf(pl, cmd)
-    STATE['calculs'].setdefault(week, {})['conf'] = conf
-    save_state()
-    return df_payload(conf)
+    try:
+        week, pl, cmd = current_data()
+        if pl is None: return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
+        if cmd is None: return jsonify({'error': "Importez le fichier Commandes dans la barre latérale."}), 400
+        conf = build_conf(pl, cmd)
+        STATE['calculs'].setdefault(week, {})['conf'] = conf
+        save_state()
+        return df_payload(conf)
+    except Exception as e:
+        app.logger.exception("api_page5")
+        return jsonify({'error': f"Confrontation impossible : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_conf')
 def api_export_conf():
@@ -761,7 +833,6 @@ def api_export_conf():
 
 @app.get('/api/prefixes')
 def api_prefixes():
-    """Correspondance automatique en lecture seule : W* / ST -> PROD, tout le reste -> HORS PROD."""
     try:
         week, pl, cmd = current_data()
         ids = safe_paid_ids(cmd) | safe_paid_ids(pl)
@@ -780,11 +851,9 @@ def _recap_compute(body):
     recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta)
     warnings = []
     if theo is None:
-        warnings.append("Total Théorique introuvable : calculez d'abord la page Effectifs (onglet 2). "
-                        "Planifié PROD = recalcul depuis le planning en attendant.")
+        warnings.append("Total Théorique introuvable : calculez d'abord la page Effectifs (onglet 2). Planifié PROD = recalcul planning.")
     if presta is None:
-        warnings.append("Prestataires (Hors Planning) non renseignés : Planifié HORS PROD = 0. "
-                        "Renseignez-les sur la page Effectifs (onglet 2) puis recalculez.")
+        warnings.append("Prestataires (Hors Planning) non renseignés : Planifié HORS PROD = 0. Renseignez-les sur la page Effectifs.")
     return week, pl, cmd, recap, day_totals, theo, presta, warnings
 
 @app.post('/api/recap')
