@@ -5,14 +5,8 @@ const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function on(sel, evt, fn){ const el = typeof sel === 'string' ? document.querySelector(sel) : sel; if (el) el.addEventListener(evt, fn); }
 
-/* Listener null-safe : un élément HTML manquant ne casse plus jamais le script entier */
-function on(sel, evt, fn){
-  const el = typeof sel === 'string' ? document.querySelector(sel) : sel;
-  if (el) el.addEventListener(evt, fn);
-}
-
-/* ---------- Helpers ---------- */
 function toast(text, type='ok'){
   const t = document.createElement('div'); t.className = 'toast ' + type; t.innerHTML = text;
   $('#toasts').appendChild(t);
@@ -24,6 +18,7 @@ async function api(url, opts={}){
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
 }
+async function getResult(key){ try { return await api('/api/result/' + key); } catch(e){ return null; } }
 function debounce(fn, ms=250){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
 function busy(btn, on_, label){
   if (!btn) return;
@@ -46,6 +41,7 @@ function orderedRows(rows, order){
 }
 function isTotalRow(r){ return Object.values(r).some(v =>
   ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique'].includes(String(v ?? ''))); }
+function fmtPct(v){ return (v === null || v === undefined || v === '') ? '' : Number(v).toFixed(1).replace('.', ',') + ' %'; }
 function tableHTML(rows, o={}){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
   const cols = Object.keys(rows[0]);
@@ -58,7 +54,7 @@ function tableHTML(rows, o={}){
     else if (isTotalRow(r)) cls = 'total';
     h += `<tr class="${cls}">` + cols.map(c => {
       let v = r[c];
-      if (c === 'Pourcentage' && v !== null && v !== undefined && v !== '') v = Number(v).toFixed(1).replace('.', ',') + ' %';
+      if (c.includes('(%)') || c === 'Pourcentage') v = fmtPct(v);
       return `<td title="${esc(v)}">${esc(v)}</td>`;
     }).join('') + '</tr>';
   });
@@ -70,7 +66,7 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
-/* ---------- SAUVEGARDE LOCALE (IndexedDB) — persistance n°4 ---------- */
+/* ---------- IndexedDB (sauvegarde navigateur) ---------- */
 function idbOpen(){ return new Promise((res, rej) => {
   const r = indexedDB.open('logiplan', 1);
   r.onupgradeneeded = () => r.result.createObjectStore('kv');
@@ -84,26 +80,24 @@ async function idbGet(k){ const db = await idbOpen(); return new Promise((res, r
   const tx = db.transaction('kv', 'readonly'); const rq = tx.objectStore('kv').get(k);
   rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });}
 async function saveBackup(){
-  try { const snap = await api('/api/backup_export'); await idbSet('state', snap); } catch(e){ /* silencieux */ }
+  try { const snap = await api('/api/backup_export'); await idbSet('state', snap); } catch(e){}
 }
 async function restoreIfEmpty(){
   try {
     const s = await api('/api/state');
-    if (s.weeks && s.weeks.length) return;                 // le serveur a déjà ses données
+    if (s.weeks && s.weeks.length) return;
     const snap = await idbGet('state');
     if (!snap) return;
     const hasData = Object.values(snap.plannings || {}).some(x => x && x.rows && x.rows.length);
     if (!hasData) return;
     const r = await api('/api/backup_import', {method:'POST', headers:{'Content-Type':'application/json'},
                                                body: JSON.stringify(snap)});
-    toast(`💾 Données restaurées (${(r.weeks||[]).join(', ')}) — sauvegarde locale du navigateur`);
-  } catch(e){ /* silencieux */ }
+    toast(`💾 Données restaurées (${(r.weeks||[]).join(', ')})`);
+  } catch(e){}
 }
 
-/* ---------- Sidebar toggle ---------- */
+/* ---------- Sidebar ---------- */
 on('#btn-side', 'click', () => document.body.classList.toggle('side-hidden'));
-
-/* ---------- Sidebar : import & semaines ---------- */
 on('#inp-taux', 'input', e => { $('#taux-val').textContent = e.target.value + '%'; });
 
 on('#btn-import', 'click', async () => {
@@ -119,8 +113,7 @@ on('#btn-import', 'click', async () => {
     let t = `✅ Semaine <b>${esc(res.week)}</b> : ${res.n_planifiees} planifiés, ${res.n_commandes} commandes.`;
     if (res.warnings.length) t += '<br>⚠️ ' + res.warnings.map(esc).join('<br>⚠️ ');
     if ($('#imp-summary')) $('#imp-summary').innerHTML = `<div class="msg ok">${t}</div>`;
-    toast('Import réussi : semaine ' + esc(res.week));
-    p1Cache.week = undefined;                 // force le rechargement du cache page 1
+    p1Cache.week = undefined;
     await refreshState(); await loadP1(); await saveBackup();
   } catch(e){
     if ($('#imp-summary')) $('#imp-summary').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`;
@@ -133,14 +126,14 @@ on('#sel-week', 'change', async e => {
   await api('/api/select_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: e.target.value})});
   p1Cache.week = undefined;
   await loadP1();
-  toast('Semaine ' + esc(e.target.value) + ' affichée');
+  await autoLoadAll();          // results stockés → affichage direct (demande n°2)
 });
 on('#btn-del-week', 'click', async () => {
-  if (!confirm('Supprimer définitivement cette semaine ? (la sauvegarde locale sera mise à jour)')) return;
+  if (!confirm('Supprimer définitivement cette semaine ?')) return;
   await api('/api/delete_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: $('#sel-week').value})});
   p1Cache.week = undefined;
   await refreshState(); await loadP1(); await saveBackup();
-  toast('Semaine supprimée (données effacées)');
+  toast('Semaine supprimée');
 });
 
 async function refreshState(){
@@ -157,12 +150,37 @@ async function refreshState(){
   b.classList.add('active'); $('#' + b.dataset.tab).classList.add('active');
   window.scrollTo({top:0});
   if (b.dataset.tab === 'p1') await loadP1();
-  if (b.dataset.tab === 'p6') await loadPrefixes();
+  if (b.dataset.tab === 'p6'){ await loadPrefixes(); const r = await getResult('recap'); if (r) renderRecap(r); }
+  if (b.dataset.tab === 'p7'){ const c = await getResult('conf'); if (c){ p5Rows = c.rows; } const a = await getResult('constat'); if (a){ p7Rows = a.rows; renderP7(); } }
+  if (b.dataset.tab === 'p8'){ const s8 = await getResult('synthese'); if (s8) renderSynthese(s8); }
 }));
 
-/* ---------- PAGE 1 : cache client + filtres instantanés (perf n°3) ---------- */
-let p1Cache = {week: undefined, rows: [], options: {}, total: 0};
+/* Affichage direct des résultats stockés au changement de semaine (demande n°2) */
+async function autoLoadAll(){
+  try {
+    const [p2, p3, p4, conf, recap, syn] = await Promise.all(
+      ['p2','p3','p4','conf','recap','synthese'].map(getResult));
+    if (p2 && p2.rows){ $('#out-p2').innerHTML = tableHTML(orderedRows(p2.rows, ['Projet', ...JOURS]));
+      if ($('#p2-metrics')) $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
+        `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
+         <div class="val">${p2.metrics[j]}</div><div class="lbl">${j}</div></div>`).join(''); }
+    if (p3 && p3.pivot && p3.pivot.rows)
+      $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
+        tableHTML(orderedRows(p3.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
+        `<details class="mt"><summary>👁️ Liste détaillée</summary>${tableHTML(orderedRows(p3.detail.rows, ['Workday ID','Nom','Projet','Jour','Transport','Shift (Début)']))}</details>`;
+    if (p4 && p4.peaks && p4.peaks.rows)
+      $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet</h3>' +
+        tableHTML(orderedRows(p4.peaks.rows, ['Projet', ...JOURS])) +
+        `<details class="mt"><summary>🕒 Détail par créneau</summary>${tableHTML(orderedRows(p4.slots.rows, ['Créneau', ...JOURS, 'Total Jour']))}</details>`;
+    if (conf && conf.rows){ p5Rows = conf.rows; renderP5(); }
+    if (recap && recap.day_order) renderRecap(recap);
+    if (syn && syn.rows) renderSynthese(syn);
+    toast('Résultats de la semaine rechargés ✅');
+  } catch(e){}
+}
 
+/* ---------- PAGE 1 ---------- */
+let p1Cache = {week: undefined, rows: [], options: {}, total: 0};
 async function loadP1(){
   try {
     const s = await api('/api/state');
@@ -184,7 +202,6 @@ async function loadP1(){
     applyP1();
   } catch(e){ $('#out-p1').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
 }
-
 function applyP1(){
   const t = $('#f1-transport').value, pj = $('#f1-projet').value, st = $('#f1-statut').value;
   const q = ($('#f1-search').value || '').trim().toLowerCase();
@@ -196,7 +213,6 @@ function applyP1(){
   $('#cnt-p1').textContent = p1Cache.total ? `${rows.length} ligne(s) affichée(s) sur ${p1Cache.total}` : '';
   $('#out-p1').innerHTML = planTable(rows);
 }
-
 function planTable(rows){
   if (!rows || !rows.length) return '<div class="empty">Aucune ligne ne correspond aux filtres.</div>';
   const base = ['TRANSPORT','WORKDAY ID','Paid ID','Nom','Projet','Statut'];
@@ -226,7 +242,7 @@ on('#f1-search', 'input', debounce(applyP1, 150));
 on('#btn-exp-p1', 'click', () =>
   window.open('/api/export_page1?' + new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value, statut:$('#f1-statut').value, q:$('#f1-search').value}), '_blank'));
 
-/* ---------- PAGE 2 : Effectifs ---------- */
+/* ---------- PAGE 2 ---------- */
 if ($('#p2-presta'))
   $('#p2-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
 on('#btn-p2', 'click', async () => {
@@ -239,8 +255,7 @@ on('#btn-p2', 'click', async () => {
     $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
       `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
        <div class="val">${d.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
-    await saveBackup();       // refs Effectifs mémorisées → sauvegarde
-    toast('Effectifs calculés (préstataires mémorisés pour « Commandes par menu »)');
+    await saveBackup();
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p2'), false);
 });
@@ -250,7 +265,7 @@ on('#btn-exp-p2', 'click', () => {
   window.open('/api/export_page2?' + p, '_blank');
 });
 
-/* ---------- PAGE 3 : Shifts ---------- */
+/* ---------- PAGE 3 ---------- */
 on('#btn-p3', 'click', async () => {
   busy($('#btn-p3'), true, 'Calcul…');
   try {
@@ -258,7 +273,7 @@ on('#btn-p3', 'click', async () => {
     const d = await api('/api/page3?' + p);
     $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
       tableHTML(orderedRows(d.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
-      `<details class="mt"><summary>👁️ Liste détaillée des personnes par shift</summary>` +
+      `<details class="mt"><summary>👁️ Liste détaillée</summary>` +
       tableHTML(orderedRows(d.detail.rows, ['Workday ID','Nom','Projet','Jour','Transport','Shift (Début)'])) + '</details>';
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p3'), false);
@@ -266,15 +281,15 @@ on('#btn-p3', 'click', async () => {
 on('#btn-exp-p3', 'click', () =>
   window.open('/api/export_page3?' + new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value}), '_blank'));
 
-/* ---------- PAGE 4 : Créneaux ---------- */
+/* ---------- PAGE 4 ---------- */
 on('#btn-p4', 'click', async () => {
   busy($('#btn-p4'), true, 'Calcul…');
   try {
     const p = new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value});
     const d = await api('/api/page4?' + p);
-    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet (overlap de shifts)</h3>' +
+    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet</h3>' +
       tableHTML(orderedRows(d.peaks.rows, ['Projet', ...JOURS])) +
-      `<details class="mt"><summary>🕒 Détail complet par créneau horaire</summary>` +
+      `<details class="mt"><summary>🕒 Détail par créneau</summary>` +
       tableHTML(orderedRows(d.slots.rows, ['Créneau', ...JOURS, 'Total Jour'])) + '</details>';
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p4'), false);
@@ -282,7 +297,7 @@ on('#btn-p4', 'click', async () => {
 on('#btn-exp-p4', 'click', () =>
   window.open('/api/export_page4?' + new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value}), '_blank'));
 
-/* ---------- PAGE 5 : Confrontation ---------- */
+/* ---------- PAGE 5 ---------- */
 let p5Rows = null;
 function confTable(rows){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée.</div>';
@@ -314,8 +329,7 @@ on('#btn-p5', 'click', async () => {
   busy($('#btn-p5'), true, 'Génération…');
   try {
     p5Rows = (await api('/api/page5', {method:'POST'})).rows;
-    renderP5();
-    await saveBackup();
+    renderP5(); await saveBackup();
     toast('Confrontation générée : ' + p5Rows.length + ' lignes');
   } catch(e){ toast(esc(e.message), 'err'); $('#out-p5').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
   busy($('#btn-p5'), false);
@@ -323,18 +337,17 @@ on('#btn-p5', 'click', async () => {
 on('#f5-search', 'input', debounce(renderP5, 250));
 on('#btn-exp-p5', 'click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
 
-/* ---------- PAGE 6 : Recap ---------- */
+/* ---------- PAGE 6 : Commandes par menu ---------- */
 const tauxByDay = Object.fromEntries(JOURS.map(j => [j, parseFloat($('#inp-taux') ? $('#inp-taux').value : 0) || 0]));
 on('#inp-taux', 'input', e => {
   JOURS.forEach(j => tauxByDay[j] = parseFloat(e.target.value) || 0);
   $$('#out-p6 [data-dtaux]').forEach(inp => inp.value = tauxByDay[inp.dataset.dtaux]);
 });
-
 async function loadPrefixes(){
   try {
     const d = await api('/api/prefixes');
     if (!d.prefixes.length){
-      $('#out-mapping').innerHTML = '<div class="empty">Importez Planning et/ou Commandes pour générer la correspondance.</div>';
+      $('#out-mapping').innerHTML = '<div class="empty">Importez Planning et/ou Commandes.</div>';
       return;
     }
     let h = '<div class="map-grid">';
@@ -349,12 +362,10 @@ on('#map-search', 'input', debounce(() => {
   const s = $('#map-search').value.toLowerCase();
   $$('#out-mapping .map-item').forEach(it => it.style.display = it.textContent.toLowerCase().includes(s) ? '' : 'none');
 }, 200));
-
 function recapBody(){ return { taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]])) }; }
 const RECAP_COLS = ['Choix','Nombres','Pourcentage','À commander'];
-const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ PROD', 'À commander'];
+const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ PROD', 'Planifié total', 'À commander'];
 let lastRecapData = null;
-
 function renderRecap(d){
   lastRecapData = d;
   let h = (d.warnings || []).map(w => `<div class="msg warn">⚠️ ${esc(w)}</div>`).join('');
@@ -375,7 +386,7 @@ function renderRecap(d){
         </div>
       </div>`;
     for (const E of D.entities){
-      const inco = E.sans_choix < 0 ? ' &nbsp;<span class="badge b-abs">⚠️ menus > planifiés</span>' : '';
+      const inco = E.over ? ' &nbsp;<span class="badge b-abs">⚠️ menus > planifiés → SANS CHOIX = 0</span>' : '';
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
         <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> ·
         SANS CHOIX : <b>${E.sans_choix}</b> · Absences déclarées : <b>${E.abs_prevues}</b>${inco}</div>
@@ -383,7 +394,7 @@ function renderRecap(d){
     }
     h += '</div>';
   }
-  if (!d.has_planning) h += '<div class="msg warn">ℹ️ Planning non chargé : Planifié PROD = 0 (fallback).</div>';
+  if (!d.has_planning) h += '<div class="msg warn">ℹ️ Planning non chargé.</div>';
   $('#out-p6').innerHTML = h;
   $$('#out-p6 [data-dtaux]').forEach(inp => inp.addEventListener('change', () => {
     tauxByDay[inp.dataset.dtaux] = parseFloat(inp.value) || 0;
@@ -394,11 +405,11 @@ async function calcP6(){
   busy($('#btn-p6'), true, 'Calcul…');
   try {
     renderRecap(await api('/api/recap', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(recapBody())}));
+    await saveBackup();
   } catch(e){ $('#out-p6').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; toast(esc(e.message), 'err'); }
   busy($('#btn-p6'), false);
 }
 on('#btn-p6', 'click', calcP6);
-
 async function downloadPost(url, filename, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   if (!r.ok){ const d = await r.json().catch(()=>({})); throw new Error(d.error || 'Export impossible'); }
@@ -409,8 +420,6 @@ on('#btn-exp-p6', 'click', async () => {
   try { await downloadPost('/api/export_recap', 'recap_commandes_menus.xlsx', recapBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
 });
-
-/* ---------- Export PDF (iframe, aucun pop-up) ---------- */
 function pdfSimpleTable(rows, cols){
   if (!rows || !rows.length) return '';
   let h = '<table><thead><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
@@ -420,17 +429,15 @@ function pdfSimpleTable(rows, cols){
     if (c0 === 'TOTAL') cls = 'total'; else if (c0 === 'SANS CHOIX') cls = 'sanschoix';
     h += `<tr class="${cls}">` + cols.map(c => {
       let v = r[c];
-      if (c === 'Pourcentage' && v !== null && v !== undefined && v !== '')
-        v = Number(v).toFixed(1).replace('.', ',') + ' %';
+      if (c.includes('(%)') || c === 'Pourcentage') v = fmtPct(v);
       return `<td>${esc(v)}</td>`;
     }).join('') + '</tr>';
   });
   return h + '</tbody></table>';
 }
 function buildPdfHtml(d){
-  const dateEd = new Date().toLocaleDateString('fr-FR');
   let h = `<h1>LogiPlan — Commandes par menu · Semaine ${esc(d.week || '')}</h1>
-           <p class="gen">Édité le ${dateEd}</p>`;
+           <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')}</p>`;
   (d.warnings || []).forEach(w => h += `<div class="msg">⚠️ ${esc(w)}</div>`);
   h += '<h3>Synthèse de la semaine</h3>' + pdfSimpleTable(d.summary_rows, SUMMARY_COLS);
   for (const day of d.day_order){
@@ -446,8 +453,7 @@ function buildPdfHtml(d){
     }
     h += '</div>';
   }
-  return `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
-<title>LogiPlan — Commandes par menu</title><style>
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>LogiPlan</title><style>
 body{font-family:'Segoe UI',Arial,sans-serif;color:#22333f;padding:18px;font-size:12px}
 h1{color:#003D5B;font-size:18px;border-bottom:3px solid #25E2CC;padding-bottom:6px;margin:0 0 4px}
 h3{color:#003D5B;font-size:14px;margin:14px 0 4px}
@@ -463,62 +469,135 @@ tr.sanschoix td{font-weight:700}
 .entity-block{page-break-inside:avoid}
 .entity-title{color:#fff;font-weight:700;padding:5px 12px;font-size:11.5px;margin-top:6px}
 .msg{background:#fff3cd;color:#775500;padding:6px 10px;border-radius:6px;font-size:11px;margin:6px 0}
-@page{margin:12mm}
-</style></head><body>${h}</body></html>`;
+@page{margin:12mm}</style></head><body>${h}</body></html>`;
+}
+function printIframe(html){
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
+  document.body.appendChild(iframe);
+  iframe.onload = () => {
+    try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
+    catch(e){ toast('Impression indisponible : ' + e.message, 'err'); }
+    setTimeout(() => iframe.remove(), 60000);
+  };
+  iframe.srcdoc = html;
 }
 on('#btn-pdf-p6', 'click', () => {
   if (!lastRecapData){ toast("Calculez d'abord le récapitulatif.", 'warn'); return; }
-  try {
-    const iframe = document.createElement('iframe');
-    iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;';
-    document.body.appendChild(iframe);
-    iframe.onload = () => {
-      try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
-      catch(e){ toast('Impression indisponible : ' + e.message, 'err'); }
-      setTimeout(() => iframe.remove(), 60000);
-    };
-    iframe.srcdoc = buildPdfHtml(lastRecapData);
-  } catch(e){ toast('PDF : ' + e.message, 'err'); }
+  printIframe(buildPdfHtml(lastRecapData));
 });
 
-/* ---------- PAGE 7 : Anomalies ---------- */
+/* ---------- PAGE 7 : Constats (ex-Anomalies) ---------- */
 let p7Rows = null;
 function renderP7(){
   if (p7Rows === null) return;
   const rows = orderedRows(searchRows(p7Rows, $('#f7-search').value),
-    ['Paid ID','Nom','Projet','Jour',"Type d'anomalie",'Commande']);
-  $('#out-p7').innerHTML = rows.length ? tableHTML(rows) : '<div class="msg ok">✅ Aucune anomalie commande.</div>';
+    ['Paid ID','Nom','Projet','Jour','Type de constat','Commande']);
+  $('#out-p7').innerHTML = rows.length ? tableHTML(rows) : '<div class="msg ok">✅ Aucun constat.</div>';
 }
 on('#btn-p7', 'click', async () => {
   busy($('#btn-p7'), true, 'Extraction…');
   try {
     p7Rows = (await api('/api/page7', {method:'POST'})).rows;
-    renderP7();
-    toast(p7Rows.length ? p7Rows.length + ' anomalie(s) détectée(s)' : 'Aucune anomalie 🎉', p7Rows.length ? 'warn' : 'ok');
+    renderP7(); await saveBackup();
+    toast(p7Rows.length ? p7Rows.length + ' constat(s) détecté(s)' : 'Aucun constat 🎉', p7Rows.length ? 'warn' : 'ok');
   } catch(e){ toast(esc(e.message), 'err'); $('#out-p7').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
   busy($('#btn-p7'), false);
 });
 on('#f7-search', 'input', debounce(renderP7, 250));
-on('#btn-exp-p7', 'click', async () => { try { await downloadPost('/api/export_anom', 'anomalies_commande.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
-
+on('#btn-exp-p7', 'click', async () => { try { await downloadPost('/api/export_anom', 'constats_commande.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
 on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), true, 'Vérification…');
   try {
     const d = await api('/api/matricules');
     let h = '';
     h += d.mismatch.rows.length
-      ? `<div class="msg warn">⚠️ ${d.mismatch.rows.length} matricule(s) paie différent(s) entre planning et Liste Actif.</div>` + tableHTML(d.mismatch.rows)
-      : '<div class="msg ok">✅ Tous les matricules paie présents dans la Liste Actif correspondent au planning.</div>';
+      ? `<div class="msg warn">⚠️ ${d.mismatch.rows.length} matricule(s) différent(s).</div>` + tableHTML(d.mismatch.rows)
+      : '<div class="msg ok">✅ Tous les matricules correspondent.</div>';
     h += d.notfound.rows.length
-      ? `<details class="mt"><summary>ℹ️ ${d.notfound.rows.length} collaborateur(s) introuvable(s) dans la Liste Actif</summary>${tableHTML(d.notfound.rows)}</details>`
+      ? `<details class="mt"><summary>ℹ️ ${d.notfound.rows.length} introuvable(s) dans la Liste Actif</summary>${tableHTML(d.notfound.rows)}</details>`
       : '';
     $('#out-matr').innerHTML = h;
   } catch(e){ $('#out-matr').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
   busy($('#btn-matr'), false);
 });
 
-/* ---------- Démarrage : restauration auto puis chargement ---------- */
+/* ---------- PAGE 8 : Synthèse (demande n°4) ---------- */
+const SYN_COLS = ['Jour','Planifié total','À commander','Commande finale','Consommé','Non consommé',
+                  'À facturer','QS (%)','QS conso vs commandé final (%)','MONTANT DA MGA HT',
+                  'Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
+const EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme'};
+let synEdits = {};   // {Jour:{commande_finale, consomme}}
+let lastSynData = null;
+
+function synthBody(){
+  return { taux: Object.fromEntries(JOURS.map(j => [j, tauxByDay[j]])),
+           pu: numVal('inp-pu'), edits: synEdits };
+}
+function renderSynthese(d){
+  lastSynData = d;
+  if ($('#inp-pu') && document.activeElement !== $('#inp-pu')) $('#inp-pu').value = d.pu ?? 0;
+  let h = '<div class="tscroll"><table class="data syn"><thead><tr>' +
+    SYN_COLS.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+  d.rows.forEach(r => {
+    const isTotal = r['Jour'] === 'TOTAL SEMAINE';
+    h += `<tr class="${isTotal ? 'total' : ''}">`;
+    SYN_COLS.forEach(c => {
+      if (!isTotal && EDITABLE[c]){
+        h += `<td class="editcell"><input type="number" min="0" step="1" data-jour="${esc(r['Jour'])}" data-champ="${EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
+      } else if (c.includes('(%)')){
+        h += `<td>${fmtPct(r[c])}</td>`;
+      } else if (c === 'MONTANT DA MGA HT'){
+        h += `<td style="text-align:right;font-weight:600">${Number(r[c] ?? 0).toLocaleString('fr-FR')}</td>`;
+      } else {
+        h += `<td>${esc(r[c])}</td>`;
+      }
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table></div>';
+  $('#out-p8').innerHTML = h;
+  $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', debounce(async () => {
+    const jour = inp.dataset.jour, champ = inp.dataset.champ;
+    synEdits[jour] = synEdits[jour] || {};
+    synEdits[jour][champ] = parseInt(inp.value) || 0;
+    await genSynthese(false);
+  }, 400)));
+}
+async function genSynthese(showToast = true){
+  busy($('#btn-p8'), true, 'Calcul…');
+  try {
+    renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())}));
+    if (showToast) toast('Synthèse générée ✅');
+  } catch(e){ $('#out-p8').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; if (showToast) toast(esc(e.message), 'err'); }
+  busy($('#btn-p8'), false);
+}
+on('#btn-p8', 'click', () => genSynthese());
+on('#inp-pu', 'change', debounce(() => { if (lastSynData) genSynthese(false); }, 500));
+on('#btn-exp-p8', 'click', async () => {
+  try { await downloadPost('/api/export_synthese', 'synthese_semaine.xlsx', synthBody()); }
+  catch(e){ toast(esc(e.message), 'err'); }
+});
+on('#btn-pdf-p8', 'click', () => {
+  if (!lastSynData){ toast("Générez d'abord la synthèse.", 'warn'); return; }
+  const d = lastSynData;
+  let h = `<h1>LogiPlan — Synthèse · Semaine ${esc(d.week || '')}</h1>
+    <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')} · Prix unitaire : ${Number(d.pu).toLocaleString('fr-FR')} MGA HT</p>`;
+  h += pdfSimpleTable(d.rows, SYN_COLS);
+  printIframe(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Synthèse</title><style>
+body{font-family:'Segoe UI',Arial,sans-serif;padding:14px;font-size:10.5px;color:#22333f}
+h1{color:#003D5B;font-size:16px;border-bottom:3px solid #25E2CC;padding-bottom:5px;margin:0 0 4px}
+.gen{color:#789;font-size:9px;margin:0 0 8px}
+table{border-collapse:collapse;width:100%}
+th{background:#003D5B;color:#fff;padding:3px 5px;font-size:9px;text-align:left}
+td{border:1px solid #dde5ec;padding:2px 5px}
+tbody tr:nth-child(odd) td{background:#f8fbfd}
+tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2px solid #003D5B}
+@page{size:A4 landscape;margin:10mm}</style></head><body>${h}</body></html>`);
+});
+
+/* ---------- Démarrage ---------- */
 (async function boot(){
-  await restoreIfEmpty();       // si le serveur a été vidé (veille Render), restaure depuis le navigateur
-  try { await refreshState(); await loadP1(); } catch(e){}
+  await restoreIfEmpty();
+  try { await refreshState(); await loadP1(); await autoLoadAll(); } catch(e){}
 })();
