@@ -24,10 +24,10 @@ def _load_secret():
 app.secret_key = _load_secret()
 app.permanent_session_lifetime = datetime.timedelta(days=30)
 
-ADMIN_USER = os.environ.get('ADMIN_USER', 'admin')
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin')
-VIEWER_USER = os.environ.get('VIEWER_USER', 'viewer')
-VIEWER_PASSWORD = os.environ.get('VIEWER_PASSWORD', 'viewer')
+ADMIN_USER = os.environ.get('ADMIN_USER', 'Admin')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Utilities26')
+VIEWER_USER = os.environ.get('VIEWER_USER', 'cnx')
+VIEWER_PASSWORD = os.environ.get('VIEWER_PASSWORD', 'Cantine2026')
 USING_DEFAULTS = (os.environ.get('ADMIN_PASSWORD') is None or os.environ.get('VIEWER_PASSWORD') is None)
 
 def current_role():
@@ -642,12 +642,12 @@ def api_me():
 @app.post('/api/login')
 def api_login():
     d = request.get_json(force=True, silent=True) or {}
-    user = str(d.get('username') or '').strip().lower()
+    user = str(d.get('username') or '').strip()
     pwd = str(d.get('password') or '')
-    if user == ADMIN_USER.lower() and pwd == ADMIN_PASSWORD:
+    if user.lower() == ADMIN_USER.lower() and pwd == ADMIN_PASSWORD:
         flask_session['role'] = 'admin'; flask_session.permanent = True
         return {'ok': True, 'role': 'admin'}
-    if user == VIEWER_USER.lower() and pwd == VIEWER_PASSWORD:
+    if user.lower() == VIEWER_USER.lower() and pwd == VIEWER_PASSWORD:
         flask_session['role'] = 'viewer'; flask_session.permanent = True
         return {'ok': True, 'role': 'viewer'}
     return jsonify({'error': "Nom d'utilisateur ou mot de passe incorrect"}), 401
@@ -660,19 +660,15 @@ def api_logout():
 # ================= DATA ROUTES =================
 @app.get('/')
 def index():
+    if current_role() not in ('admin', 'viewer'):
+        return send_from_directory(app.static_folder, 'login.html')
     return send_from_directory(app.static_folder, 'index.html')
 
-@app.get('/api/state')
-@login_required
-def api_state():
-    weeks = sorted(STATE['plannings'].keys())
-    cur = STATE.get('current_week')
-    if cur not in weeks and weeks:
-        cur = weeks[-1]; STATE['current_week'] = cur; save_state()
-    _, pl, cmd = current_data()
-    return {'weeks': weeks, 'current_week': cur,
-            'has_planning': pl is not None, 'has_commande': cmd is not None,
-            'has_reference': isinstance(STATE.get('reference'), pd.DataFrame)}
+@app.get('/static/index.html')
+def guard_index():
+    if current_role() not in ('admin', 'viewer'):
+        return send_from_directory(app.static_folder, 'login.html')
+    return send_from_directory(app.static_folder, 'index.html')
 
 @app.get('/api/backup_export')
 @login_required
