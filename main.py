@@ -1,12 +1,56 @@
-import os, io, re, pickle, datetime, unicodedata, gzip
+import os, io, re, pickle, datetime, unicodedata, gzip, secrets
+from functools import wraps
 import pandas as pd
 import numpy as np
-from flask import Flask, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file, send_from_directory, session as flask_session
 from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.json.sort_keys = False
 
+# ================= AUTHENTIFICATION =================
+def _load_secret():
+    if os.environ.get('SECRET_KEY'):
+        return os.environ['SECRET_KEY']
+    if os.path.exists('secret_key.txt'):
+        try: return open('secret_key.txt').read().strip()
+        except Exception: pass
+    k = secrets.token_hex(32)
+    try:
+        with open('secret_key.txt', 'w') as f: f.write(k)
+    except Exception: pass
+    return k
+
+app.secret_key = _load_secret()
+app.permanent_session_lifetime = datetime.timedelta(days=30)
+
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin')
+VIEWER_PASSWORD = os.environ.get('VIEWER_PASSWORD', 'viewer')
+USING_DEFAULTS = (os.environ.get('ADMIN_PASSWORD') is None or os.environ.get('VIEWER_PASSWORD') is None)
+
+def current_role():
+    return flask_session.get('role')
+
+def is_admin():
+    return current_role() == 'admin'
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if current_role() not in ('admin', 'viewer'):
+            return jsonify({'error': "Connexion requise"}), 401
+        return fn(*a, **kw)
+    return wrapper
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        if current_role() != 'admin':
+            return jsonify({'error': "Action réservée à l'administrateur"}), 403
+        return fn(*a, **kw)
+    return wrapper
+
+# ================= CONFIG =================
 JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 JOURS_ABR = {'Lundi': 'lun.', 'Mardi': 'mar.', 'Mercredi': 'mer.', 'Jeudi': 'jeu.',
              'Vendredi': 'ven.', 'Samedi': 'sam.', 'Dimanche': 'dim.'}
@@ -588,11 +632,35 @@ def handle_exception(e):
         return jsonify({'error': e.description}), e.code
     return jsonify({'error': f"Erreur serveur : {type(e).__name__} — {e}"}), 500
 
+# ================= AUTH ROUTES =================
+@app.get('/api/me')
+def api_me():
+    return {'role': current_role(), 'using_defaults': USING_DEFAULTS}
+
+@app.post('/api/login')
+def api_login():
+    d = request.get_json(force=True, silent=True) or {}
+    role = d.get('role'); pwd = str(d.get('password') or '')
+    if role == 'admin' and pwd == ADMIN_PASSWORD:
+        flask_session['role'] = 'admin'; flask_session.permanent = True
+        return {'ok': True, 'role': 'admin'}
+    if role == 'viewer' and pwd == VIEWER_PASSWORD:
+        flask_session['role'] = 'viewer'; flask_session.permanent = True
+        return {'ok': True, 'role': 'viewer'}
+    return jsonify({'error': "Mot de passe incorrect pour ce profil"}), 401
+
+@app.post('/api/logout')
+def api_logout():
+    flask_session.clear()
+    return {'ok': True}
+
+# ================= DATA ROUTES =================
 @app.get('/')
 def index():
     return send_from_directory(app.static_folder, 'index.html')
 
 @app.get('/api/state')
+@login_required
 def api_state():
     weeks = sorted(STATE['plannings'].keys())
     cur = STATE.get('current_week')
@@ -604,6 +672,7 @@ def api_state():
             'has_reference': isinstance(STATE.get('reference'), pd.DataFrame)}
 
 @app.get('/api/backup_export')
+@login_required
 def api_backup_export():
     def dfd(d):
         return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
@@ -621,6 +690,7 @@ def api_backup_export():
             'synth_pu': STATE.get('synth_pu', 0), 'synth_edits': STATE.get('synth_edits', {})}
 
 @app.post('/api/backup_import')
+@admin_required
 def api_backup_import():
     try:
         b = request.get_json(force=True, silent=True) or {}
@@ -662,6 +732,7 @@ def api_backup_import():
         return jsonify({'error': f"Restauration impossible : {e}"}), 400
 
 @app.post('/api/import')
+@admin_required
 def api_import():
     planning_files = request.files.getlist('planning')
     if not planning_files:
@@ -704,6 +775,7 @@ def api_import():
             'n_commandes': (len(cmd) if cmd is not None else 0), 'warnings': warnings}
 
 @app.post('/api/select_week')
+@login_required
 def api_select_week():
     w = (request.json or {}).get('week')
     if w in STATE['plannings']:
@@ -711,16 +783,17 @@ def api_select_week():
     return jsonify({'error': 'Semaine inconnue'}), 400
 
 @app.post('/api/delete_week')
+@admin_required
 def api_delete_week():
     w = (request.json or {}).get('week')
     STATE['plannings'].pop(w, None); STATE['commandes'].pop(w, None); STATE['calculs'].pop(w, None)
-    # Purge des saisies Synthèse liées aux dates de la semaine supprimée
     for d in derive_week_dates(w).values():
         STATE.get('synth_edits', {}).pop(d.isoformat(), None)
     STATE['current_week'] = next(iter(sorted(STATE['plannings'])), None)
     save_state(); return {'ok': True}
 
 @app.get('/api/result/<key>')
+@login_required
 def api_result(key):
     week = STATE.get('current_week')
     r = get_result(week, key)
@@ -728,6 +801,7 @@ def api_result(key):
     return r
 
 @app.get('/api/page1')
+@login_required
 def api_page1():
     week, pl, _ = current_data()
     if pl is None:
@@ -745,6 +819,7 @@ def api_page1():
     return p
 
 @app.get('/api/export_page1')
+@login_required
 def api_export_page1():
     _, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
@@ -755,7 +830,14 @@ def api_export_page1():
             disp[f'{j}{suf}'] = disp[f'{j}{suf}'].apply(format_time_display)
     return dl(excel_bytes(_apply_filters(disp)), 'planning_regroupé.xlsx')
 
+def _save_p2_refs(week, pivot, prest):
+    calc = STATE['calculs'].setdefault(week, {})
+    calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
+    tt = pivot[pivot['Projet'] == 'Total Théorique']
+    calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
+
 @app.get('/api/page2')
+@admin_required
 def api_page2():
     week, pl, _ = current_data()
     if pl is None: return {'rows': [], 'metrics': {}}
@@ -764,10 +846,7 @@ def api_page2():
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
-    calc = STATE['calculs'].setdefault(week, {})
-    calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
-    tt = pivot[pivot['Projet'] == 'Total Théorique']
-    calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
+    _save_p2_refs(week, pivot, prest)
     p = df_payload(pivot)
     tot = pivot[pivot['Projet'] == 'Total à commander']
     p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
@@ -776,6 +855,7 @@ def api_page2():
     return p
 
 @app.get('/api/export_page2')
+@login_required
 def api_export_page2():
     week, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
@@ -783,14 +863,13 @@ def api_export_page2():
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
-    calc = STATE['calculs'].setdefault(week, {})
-    calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
-    tt = pivot[pivot['Projet'] == 'Total Théorique']
-    calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
-    save_state()
+    if is_admin():   # un viewer extrait sans modifier les références mémorisées
+        _save_p2_refs(week, pivot, prest)
+        save_state()
     return dl(excel_bytes(pivot), 'effectifs.xlsx')
 
 @app.get('/api/page3')
+@admin_required
 def api_page3():
     _, pl, _ = current_data()
     empty = {'pivot': {'columns': [], 'rows': []}, 'detail': {'columns': [], 'rows': []}}
@@ -802,6 +881,7 @@ def api_page3():
     return p
 
 @app.get('/api/export_page3')
+@login_required
 def api_export_page3():
     _, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
@@ -815,6 +895,7 @@ def api_export_page3():
     return dl(buf, 'shifts.xlsx')
 
 @app.get('/api/page4')
+@admin_required
 def api_page4():
     _, pl, _ = current_data()
     if pl is None: return {'peaks': {'columns': [], 'rows': []}, 'slots': {'columns': [], 'rows': []}}
@@ -824,6 +905,7 @@ def api_page4():
     return p
 
 @app.get('/api/export_page4')
+@login_required
 def api_export_page4():
     _, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
@@ -836,6 +918,7 @@ def api_export_page4():
     return dl(buf, 'creneaux_pics.xlsx')
 
 @app.post('/api/page5')
+@admin_required
 def api_page5():
     try:
         week, pl, cmd = current_data()
@@ -850,6 +933,7 @@ def api_page5():
         return jsonify({'error': f"Confrontation impossible : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_conf')
+@login_required
 def api_export_conf():
     wk = STATE.get('current_week')
     r = get_result(wk, 'conf')
@@ -857,6 +941,7 @@ def api_export_conf():
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'confrontation.xlsx')
 
 @app.get('/api/prefixes')
+@login_required
 def api_prefixes():
     try:
         week, pl, cmd = current_data()
@@ -882,13 +967,13 @@ def _recap_compute(body):
     return week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day
 
 @app.post('/api/recap')
+@admin_required
 def api_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
         week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day = _recap_compute(body)
         if cmd is None:
             return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes dans la barre latérale."}), 400
-        # Mémorise les taux pour la Synthèse (relecture des autres semaines)
         STATE['calculs'].setdefault(week, {})['taux'] = taux_by_day
         save_state()
         dates = derive_week_dates(week)
@@ -932,6 +1017,7 @@ def api_recap():
         return jsonify({'error': f"Erreur de calcul : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_recap')
+@login_required
 def api_export_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -946,6 +1032,7 @@ def api_export_recap():
         return jsonify({'error': f"Erreur d'export : {e}"}), 400
 
 @app.post('/api/page7')
+@admin_required
 def api_page7():
     wk = STATE.get('current_week')
     conf = get_result(wk, 'conf')
@@ -955,13 +1042,14 @@ def api_page7():
     return p
 
 @app.post('/api/export_anom')
+@login_required
 def api_export_anom():
     wk = STATE.get('current_week')
     r = get_result(wk, 'constat')
     if r is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'constats_commande.xlsx')
 
-# ================= SYNTHÈSE MENSUELLE PAR DATES (demandes 3 & 4) =================
+# ================= SYNTHÈSE MENSUELLE =================
 SYN_COLS = ['Date', 'Semaine', 'Planifié total', 'À commander', 'Commande finale', 'Consommé',
             'Non consommé', 'À facturer', 'QS (%)', 'QS conso vs commandé final (%)',
             'MONTANT DA MGA HT', 'Nombre de plat ajusté', 'Pourcentage plat ajusté (%)']
@@ -977,19 +1065,19 @@ def _synth_compute(body):
     nxt = datetime.date(year + (mon == 12), (mon % 12) + 1, 1)
     last = nxt - datetime.timedelta(days=1)
 
-    # PU + saisies persistées par date
-    if body.get('pu') is not None:
-        STATE['synth_pu'] = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
+    # Un viewer consulte : ni le PU ni les saisies ne sont modifiés par sa requête
+    if is_admin():
+        if body.get('pu') is not None:
+            STATE['synth_pu'] = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
+        for diso, fields in (body.get('edits') or {}).items():
+            if not isinstance(fields, dict): continue
+            cur = STATE.setdefault('synth_edits', {}).setdefault(diso, {})
+            for f in ('commande_finale', 'consomme'):
+                if f in fields:
+                    cur[f] = None if fields[f] is None else _to_int(fields[f])
+        save_state()
     pu = _to_float(STATE.get('synth_pu'), 0)
-    for diso, fields in (body.get('edits') or {}).items():
-        if not isinstance(fields, dict): continue
-        cur = STATE.setdefault('synth_edits', {}).setdefault(diso, {})
-        for f in ('commande_finale', 'consomme'):
-            if f in fields:
-                cur[f] = None if fields[f] is None else _to_int(fields[f])
-    save_state()
 
-    # Agrégation de toutes les semaines dont les dates tombent dans le mois
     rows = []
     for w in sorted(STATE['plannings'].keys()):
         dates = derive_week_dates(w)
@@ -1033,10 +1121,10 @@ def _synth_compute(body):
     total['QS conso vs commandé final (%)'] = 100.0 if (t_cf > t_conso) else ((t_conso / t_cf * 100) if t_cf > 0 else 0.0)
     total['Pourcentage plat ajusté (%)'] = round((total['Nombre de plat ajusté'] / total['À commander'] * 100)
                                                  if total['À commander'] > 0 else 0.0, 1)
-    rows_out = rows + [total]
-    return {'week': week, 'month': month, 'pu': pu, 'rows': rows_out}
+    return {'week': week, 'month': month, 'pu': pu, 'rows': rows + [total]}
 
 @app.post('/api/synthese')
+@admin_required
 def api_synthese():
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -1050,6 +1138,7 @@ def api_synthese():
         return jsonify({'error': f"Erreur synthèse : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_synthese')
+@login_required
 def api_export_synthese():
     try:
         body = request.get_json(force=True, silent=True) or {}
@@ -1061,6 +1150,7 @@ def api_export_synthese():
         return jsonify({'error': f"Erreur d'export : {e}"}), 400
 
 @app.get('/api/matricules')
+@login_required
 def api_matricules():
     week, pl, _ = current_data()
     if pl is None: return jsonify({'error': "Chargez d'abord un planning."}), 400
