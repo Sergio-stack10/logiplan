@@ -161,4 +161,8 @@ summary:hover{color:var(--teal)}
   .metrics{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
   .layout{flex-direction:column}
   #sidebar{width:100%}
+  /* Synthèse : cellules modifiables */
+table.syn td.editcell{padding:2px 4px}
+table.syn td.editcell input{width:78px;padding:4px;border:1px solid #bdd3e2;border-radius:7px;text-align:right;font-size:12px;background:#f4fbff}
+table.syn td.editcell input:focus{outline:2px solid var(--teal);background:#fff}
 }
