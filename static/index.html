@@ -9,8 +9,24 @@
 </head>
 <body>
 
+<!-- Écran de connexion -->
+<div id="login-overlay">
+  <div class="login-card">
+    <div class="login-logo">📊</div>
+    <h1>LogiPlan</h1>
+    <p class="login-sub">Choisissez votre profil puis saisissez le mot de passe</p>
+    <div class="role-pick">
+      <button class="role-btn" data-role="admin">🛡️<span>Administrateur</span><small>Import, calculs, suppression, extraction</small></button>
+      <button class="role-btn" data-role="viewer">👁️<span>Visualiseur</span><small>Consultation &amp; extraction uniquement</small></button>
+    </div>
+    <input type="password" id="login-pwd" placeholder="Mot de passe" autocomplete="current-password">
+    <button class="btn primary" id="btn-login">Se connecter</button>
+    <div id="login-err"></div>
+  </div>
+</div>
+
 <header class="topbar">
-  <button id="btn-side" class="hamb" title="Masquer / afficher le menu">☰</button>
+  <button id="btn-side" class="hamb admin-only" title="Masquer / afficher le menu">☰</button>
   <div class="brand"><span class="logo">📊</span> <b>LogiPlan</b></div>
   <nav id="tabs">
     <button class="tab active" data-tab="p1">📄 Regroupement</button>
@@ -22,30 +38,34 @@
     <button class="tab" data-tab="p6">🍽️ Commandes par menu</button>
     <button class="tab" data-tab="p8">🧾 Synthèse</button>
   </nav>
+  <span class="role-badge" id="role-badge"></span>
+  <button id="btn-logout" class="btn-mini" title="Se déconnecter">⏻ Déconnexion</button>
   <span class="week-badge" id="week-badge">—</span>
 </header>
 
 <div class="layout">
 <aside id="sidebar">
-  <h3>1 · Importation</h3>
-  <label>Fichiers Planning (obligatoire)</label>
-  <input type="file" id="inp-planning" multiple accept=".xlsx,.xls,.xlsb">
-  <label>Fichier Commandes (optionnel)</label>
-  <input type="file" id="inp-commande" accept=".xlsx">
-  <label>Fichier Liste Actif (optionnel)</label>
-  <input type="file" id="inp-reference" accept=".xlsx">
-  <label>Nom de la semaine</label>
-  <input type="text" id="inp-week" placeholder="Ex : S38 (auto si vide)">
-  <button class="btn primary" id="btn-import">🚀 Lancer l'import et le regroupement</button>
-  <div id="imp-summary"></div>
-  <h3>2 · Absentéisme global</h3>
-  <div class="slider-row">
-    <input type="range" id="inp-taux" min="0" max="30" value="5">
-    <b id="taux-val">5%</b>
+  <div class="admin-only">
+    <h3>1 · Importation</h3>
+    <label>Fichiers Planning (obligatoire)</label>
+    <input type="file" id="inp-planning" multiple accept=".xlsx,.xls,.xlsb">
+    <label>Fichier Commandes (optionnel)</label>
+    <input type="file" id="inp-commande" accept=".xlsx">
+    <label>Fichier Liste Actif (optionnel)</label>
+    <input type="file" id="inp-reference" accept=".xlsx">
+    <label>Nom de la semaine</label>
+    <input type="text" id="inp-week" placeholder="Ex : S38 (auto si vide)">
+    <button class="btn primary" id="btn-import">🚀 Lancer l'import et le regroupement</button>
+    <div id="imp-summary"></div>
+    <h3>2 · Absentéisme global</h3>
+    <div class="slider-row">
+      <input type="range" id="inp-taux" min="0" max="30" value="5">
+      <b id="taux-val">5%</b>
+    </div>
   </div>
-  <h3>3 · Historique des semaines</h3>
+  <h3>Historique des semaines</h3>
   <select id="sel-week"></select>
-  <button class="btn danger-o" id="btn-del-week">🗑️ Supprimer cette semaine</button>
+  <button class="btn danger-o admin-only" id="btn-del-week">🗑️ Supprimer cette semaine</button>
   <div id="sidebar-msg"></div>
 </aside>
 
@@ -71,11 +91,11 @@
       <div class="toolbar">
         <select id="f2-projet"><option value="">Projet : tous</option></select>
         <select id="f2-statut"><option value="">Statut : tous</option></select>
-        <button class="btn primary" id="btn-p2">📈 Calculer</button>
+        <button class="btn primary admin-only" id="btn-p2">📈 Calculer</button>
         <button class="btn accent" id="btn-exp-p2">📥 Excel</button>
       </div>
-      <h3 class="sub">✍️ Prestataires hors planning</h3>
-      <div class="presta-grid" id="p2-presta"></div>
+      <h3 class="sub admin-only">✍️ Prestataires hors planning</h3>
+      <div class="presta-grid admin-only" id="p2-presta"></div>
       <h3 class="sub">📦 Total à commander par jour</h3>
       <div class="metrics" id="p2-metrics"></div>
       <div id="out-p2"></div>
@@ -89,10 +109,10 @@
         <select id="f3-transport"><option value="">Transport : tous</option></select>
         <select id="f3-projet"><option value="">Projet : tous</option></select>
         <select id="f3-statut"><option value="">Statut : tous</option></select>
-        <button class="btn primary" id="btn-p3">🚌 Calculer</button>
+        <button class="btn primary admin-only" id="btn-p3">🚌 Calculer</button>
         <button class="btn accent" id="btn-exp-p3">📥 Excel</button>
       </div>
-      <div id="out-p3"><div class="hint">Cliquez sur « Calculer » (les résultats sont conservés).</div></div>
+      <div id="out-p3"><div class="hint">Aucun résultat généré pour cette semaine.</div></div>
     </div>
   </section>
 
@@ -102,10 +122,10 @@
       <div class="toolbar">
         <select id="f4-projet"><option value="">Projet : tous</option></select>
         <select id="f4-statut"><option value="">Statut : tous</option></select>
-        <button class="btn primary" id="btn-p4">🕒 Calculer</button>
+        <button class="btn primary admin-only" id="btn-p4">🕒 Calculer</button>
         <button class="btn accent" id="btn-exp-p4">📥 Excel</button>
       </div>
-      <div id="out-p4"><div class="hint">Cliquez sur « Calculer » (les résultats sont conservés).</div></div>
+      <div id="out-p4"><div class="hint">Aucun résultat généré pour cette semaine.</div></div>
     </div>
   </section>
 
@@ -113,11 +133,11 @@
     <h2 class="page-title">⚠️ Confrontation planning &amp; commandes</h2>
     <div class="card">
       <div class="toolbar">
-        <button class="btn primary" id="btn-p5">↔️ Générer la confrontation</button>
+        <button class="btn primary admin-only" id="btn-p5">↔️ Générer la confrontation</button>
         <button class="btn accent" id="btn-exp-p5">📥 Excel</button>
         <input type="text" id="f5-search" placeholder="🔍 Rechercher…">
       </div>
-      <div id="out-p5"><div class="hint">Compare planning et commandes, personne par personne.</div></div>
+      <div id="out-p5"><div class="hint">Aucune confrontation générée pour cette semaine.</div></div>
     </div>
   </section>
 
@@ -125,11 +145,11 @@
     <h2 class="page-title">📋 Constats</h2>
     <div class="card">
       <div class="toolbar">
-        <button class="btn primary" id="btn-p7">📋 Extraire les constats</button>
+        <button class="btn primary admin-only" id="btn-p7">📋 Extraire les constats</button>
         <button class="btn accent" id="btn-exp-p7">📥 Excel</button>
         <input type="text" id="f7-search" placeholder="🔍 Rechercher…">
       </div>
-      <div id="out-p7"><div class="hint">Nécessite la confrontation (onglet 5).</div></div>
+      <div id="out-p7"><div class="hint">Aucun constat généré pour cette semaine.</div></div>
       <details class="mt">
         <summary>🆔 Vérification des matricules paie (Workday vs Liste Actif)</summary>
         <button class="btn" id="btn-matr">🔎 Lancer la vérification</button>
@@ -145,19 +165,18 @@
         tout le reste → <b>HORS PROD</b> · Les commandes <b>PROD de personnes non planifiées</b> ne sont pas comptées ·
         <b>Planifié PROD</b> = « Total Théorique » de la page <b>Effectifs</b> ·
         <b>Planifié HORS PROD</b> = « Prestataires (Hors Planning) » de la page <b>Effectifs</b> ·
-        SANS CHOIX = max(0, Planifié − somme des menus) ·
-        <b>Absence prévue</b> : par jour, appliquée uniquement à <b>PROD</b>.</p>
+        SANS CHOIX = max(0, Planifié − somme des menus).</p>
       <details open>
         <summary>🗂️ Correspondance Préfixe matricule → Entité (automatique)</summary>
         <input type="text" id="map-search" placeholder="🔍 Filtrer les préfixes…" class="mt">
         <div id="out-mapping"></div>
       </details>
       <div class="toolbar" style="margin-top:14px">
-        <button class="btn primary" id="btn-p6">🍽️ Calculer le récapitulatif</button>
+        <button class="btn primary admin-only" id="btn-p6">🍽️ Calculer le récapitulatif</button>
         <button class="btn accent" id="btn-exp-p6">📥 Excel</button>
         <button class="btn" id="btn-pdf-p6">🖨️ PDF</button>
       </div>
-      <div id="out-p6"><div class="hint">1) Onglet Effectifs : calculez (avec prestataires) · 2) Revenez ici : Calculer.</div></div>
+      <div id="out-p6"><div class="hint">Aucun récapitulatif généré pour cette semaine.</div></div>
     </div>
   </section>
 
@@ -165,7 +184,6 @@
     <h2 class="page-title">🧾 Synthèse mensuelle</h2>
     <div class="card">
       <p class="caption">Agrège <b>toutes les semaines enregistrées</b> du mois choisi, une ligne par <b>date réelle</b> ·
-        Commande finale et Consommé sont <b>modifiables</b> (saisies mémorisées par date) ·
         Non consommé = max(0, Commande finale − Consommé) · À facturer = Commande si Commande &gt; Consommé, sinon Consommé ·
         MONTANT DA MGA HT = À facturer × Prix unitaire.</p>
       <div class="toolbar">
@@ -175,13 +193,15 @@
         <label style="font-size:12px;color:#6b7c8a;font-weight:600">Prix unitaire (MGA HT) :
           <input type="number" id="inp-pu" min="0" step="1" value="0" style="width:120px;padding:6px;border:1px solid #dde5ec;border-radius:8px;text-align:right">
         </label>
-        <button class="btn primary" id="btn-p8">🧾 Générer</button>
+        <button class="btn primary admin-only" id="btn-p8">🧾 Générer</button>
         <button class="btn accent" id="btn-exp-p8">📥 Excel</button>
         <button class="btn" id="btn-pdf-p8">🖨️ PDF</button>
       </div>
-      <div id="out-p8"><div class="hint">Choisissez un mois puis « Générer » (données issues de toutes les semaines enregistrées).</div></div>
+      <div id="out-p8"><div class="hint">Aucune synthèse générée pour cette semaine.</div></div>
     </div>
   </section>
+</main>
+</div>
 
 <footer class="footer-fix">Powered by <span>RAVO SERGIO</span></footer>
 <div id="toasts"></div>
