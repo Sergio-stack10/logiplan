@@ -63,19 +63,22 @@ ENTITES_MAIN = ENTITES
 ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ PROD": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
-# ================= PERSISTANCE MONGODB (recommandée) =================
-# Créez un cluster gratuit sur mongodb.com/atlas, puis définissez MONGODB_URI
-# dans Render → Environment. Sans cette variable, l'app fonctionne comme avant.
+# ================= PERSISTANCE MONGODB =================
+# Persistance cloud via MongoDB Atlas (MONGODB_URI dans Render → Environment).
+# Sans cette variable, l'app fonctionne avec la persistance fichier classique.
 mongo_col = None
+Binary = None
 if os.environ.get('MONGODB_URI'):
     try:
         from pymongo import MongoClient
-        from bson.binary import Binary
+        from bson.binary import Binary as _B
+        Binary = _B
         _mc = MongoClient(os.environ['MONGODB_URI'], serverSelectionTimeoutMS=8000)
         _mc.admin.command('ping')
         mongo_col = _mc[os.environ.get('MONGODB_DB', 'logiplan')]['state']
         app.logger.info("MongoDB connecté : persistance permanente active")
     except Exception as e:
+        mongo_col = None
         app.logger.warning(f"MongoDB indisponible, persistance par fichier uniquement : {e}")
 
 def alpha_prefix(mat):
@@ -153,7 +156,7 @@ def save_state():
             pickle.dump(STATE, f)
     except Exception:
         pass
-    if mongo_col:
+    if mongo_col and Binary:
         try:
             blob = Binary(gzip.compress(pickle.dumps(STATE)))
             mongo_col.update_one({'_id': 'state'},
@@ -672,7 +675,7 @@ def handle_exception(e):
     app.logger.exception("Erreur serveur LogiPlan")
     if isinstance(e, HTTPException):
         if e.code == 404 and request.path.startswith('/api/'):
-            return jsonify({'error': f"Route introuvable : {request.path} — vérifiez que main.py est la version complète"}), 404
+            return jsonify({'error': f"Route introuvable : {request.path}"}), 404
         return jsonify({'error': e.description}), e.code
     return jsonify({'error': f"Erreur serveur : {type(e).__name__} — {e}"}), 500
 
