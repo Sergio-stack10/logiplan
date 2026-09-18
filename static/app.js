@@ -95,16 +95,24 @@ function searchRows(rows, text){
 }
 
 /* ================= RÔLE ================= */
+const ADMIN_CONTROL_IDS = ['btn-import','inp-planning','inp-commande','inp-reference',
+  'inp-week','inp-taux','btn-del-week','btn-p2','btn-p3','btn-p4','btn-p5',
+  'btn-p7','btn-p6','btn-p8','btn-exp-p2'];
 function applyRoleUI(){
-  document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', ROLE === 'viewer'));
+  const viewer = (ROLE === 'viewer');
+  // 1) Masquage par classe (éléments marqués admin-only dans le HTML)
+  document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', viewer));
+  // 2) Filet de sécurité : grisage par ID, même si la classe manque dans le HTML
+  ADMIN_CONTROL_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = viewer;
+    el.classList.toggle('viewer-locked', viewer);
+  });
   const b = $('#role-badge');
-  if (b) b.innerHTML = ROLE === 'admin' ? '🛡️ Admin' : '👁️ Visualiseur';
-  ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = (ROLE === 'viewer'); });
+  if (b) b.innerHTML = viewer ? '👁️ Visualiseur' : '🛡️ Admin';
+  ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
-on('#btn-logout', 'click', async () => {
-  try { await api('/api/logout', {method:'POST'}); } catch(e){}
-  window.location.href = '/';
-});
 
 /* ---------- IndexedDB ---------- */
 function idbOpen(){ return new Promise((res, rej) => {
