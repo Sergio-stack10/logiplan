@@ -212,7 +212,8 @@ async function autoLoadAll(){
     if (p2 && p2.rows){ $('#out-p2').innerHTML = tableHTML(orderedRows(p2.rows, ['Projet', ...JOURS]));
       if ($('#p2-metrics')) $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
         `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
-         <div class="val">${p2.metrics[j]}</div><div class="lbl">${j}</div></div>`).join(''); }
+         <div class="val">${p2.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
+      if (p2.presta) JOURS.forEach(j => { const el = document.getElementById('prest-' + j); if (el) el.value = p2.presta[j] ?? 0; }); }
     if (p3 && p3.pivot && p3.pivot.rows)
       $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
         tableHTML(orderedRows(p3.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
@@ -450,6 +451,27 @@ function entityTableHTML(E, dayIso){
   return h + '</tbody></table></div>';
 }
 
+/* Date ISO de secours calculée depuis le n° de semaine (Sxx → lundi + index du jour) */
+function computeDateIso(week, day){
+  try {
+    const m = String(week || '').toUpperCase().match(/S(\d{1,2})/);
+    if (!m) return '';
+    const wk = parseInt(m[1], 10);
+    if (wk < 1 || wk > 53) return '';
+    const now = new Date();
+    for (const y of [now.getFullYear(), now.getFullYear() - 1, now.getFullYear() + 1]){
+      const jan4 = new Date(Date.UTC(y, 0, 4));
+      const dow = jan4.getUTCDay() || 7;
+      const monday = new Date(jan4);
+      monday.setUTCDate(jan4.getUTCDate() - dow + 1 + (wk - 1) * 7);
+      const d = new Date(monday);
+      d.setUTCDate(monday.getUTCDate() + JOURS.indexOf(day));
+      return d.toISOString().slice(0, 10);
+    }
+  } catch(e){}
+  return '';
+}
+
 function renderRecap(d){
   d = normalizeRecapLabels(d);
   lastRecapData = d;
@@ -458,6 +480,7 @@ function renderRecap(d){
        tableHTML(orderedRows(d.summary_rows, SUMMARY_COLS), {recap:true});
   for (const day of d.day_order){
     const D = d.days[day];
+    D.dateIso = D.dateIso || computeDateIso(d.week, day);
     const taCtrl = ROLE === 'admin' ?
       `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7c8a;font-weight:600;white-space:nowrap">
         Absence prévue (%) — PROD
