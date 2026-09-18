@@ -7,7 +7,18 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function on(sel, evt, fn){ const el = typeof sel === 'string' ? document.querySelector(sel) : sel; if (el) el.addEventListener(evt, fn); }
 
-/* ---------- Overlay de chargement global (avec watchdog anti-figage) ---------- */
+/* ---------- Toast (défini en tout premier) ---------- */
+function toast(text, type='ok'){
+  try {
+    const box = document.getElementById('toasts');
+    if (!box) return;
+    const t = document.createElement('div'); t.className = 'toast ' + type; t.innerHTML = text;
+    box.appendChild(t);
+    setTimeout(()=>{ t.classList.add('out'); setTimeout(()=>t.remove(), 350); }, 4500);
+  } catch(e){ console.error(text); }
+}
+
+/* ---------- Overlay de chargement (watchdog anti-figage) ---------- */
 let pendingReqs = 0, loadingTimer = null, loadingWatchdog = null;
 function showLoadingOverlay(label){
   let ov = document.getElementById('loading-overlay');
@@ -48,18 +59,69 @@ async function api(url, opts={}){
 }
 async function getResult(key){ try { return await api('/api/result/' + key); } catch(e){ return null; } }
 function debounce(fn, ms=250){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
+/* busy idempotent : jamais de libellé écrasé, le bouton revient toujours à son état */
 function busy(btn, on_, label){
   if (!btn) return;
-  if (on_){ btn.dataset.lbl = btn.innerHTML; btn.disabled = true; btn.innerHTML = '⏳ ' + (label||'…'); }
-  else { btn.disabled = false; btn.innerHTML = btn.dataset.lbl; }
+  if (on_){
+    if (!btn.dataset.lbl) btn.dataset.lbl = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ ' + (label || '…');
+  } else {
+    btn.disabled = false;
+    if (btn.dataset.lbl){ btn.innerHTML = btn.dataset.lbl; delete btn.dataset.lbl; }
+  }
 }
 function numVal(id){ const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
 function intVal(id){ const el = document.getElementById(id); const v = el ? parseInt(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
-function fillSelect(sel, values){
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">Tous</option>' +
-    (values||[]).map(v => `<option${v===cur?' selected':''}>${esc(v)}</option>`).join('');
+
+/* ================= MULTI-SELECT (cases à cocher) ================= */
+const MS = { comps: {} };
+function initMultiSelect(id){
+  const sel = document.getElementById(id);
+  if (!sel || MS.comps[id]) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'ms';
+  wrap.innerHTML = `<button type="button" class="ms-btn">Tous ▾</button><div class="ms-panel"></div>`;
+  sel.parentNode.insertBefore(wrap, sel);
+  sel.style.display = 'none';
+  MS.comps[id] = { sel, wrap, btn: wrap.querySelector('.ms-btn'), panel: wrap.querySelector('.ms-panel') };
+  wrap.querySelector('.ms-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    Object.entries(MS.comps).forEach(([k, c]) => { if (k !== id) c.wrap.classList.remove('open'); });
+    wrap.classList.toggle('open');
+  });
+  wrap.querySelector('.ms-panel').addEventListener('click', e => e.stopPropagation());
+  document.addEventListener('click', () => wrap.classList.remove('open'));
 }
+function msValues(id){
+  const c = MS.comps[id];
+  if (!c){
+    const sel = document.getElementById(id);
+    return (sel && sel.value) ? [sel.value] : [];
+  }
+  return Array.from(c.panel.querySelectorAll('input:checked')).map(cb => cb.value);
+}
+function msFill(id, values){
+  const c = MS.comps[id];
+  if (!c) return;
+  const prev = msValues(id);
+  c.panel.innerHTML = (values||[]).map(v =>
+    `<label class="ms-opt"><input type="checkbox" value="${esc(v)}"${prev.includes(v)?' checked':''}> ${esc(v)}</label>`).join('')
+    || '<div class="ms-empty">—</div>';
+  c.panel.querySelectorAll('input').forEach(cb => cb.addEventListener('change', () => msUpdateBtn(id)));
+  msUpdateBtn(id);
+}
+function msUpdateBtn(id){
+  const c = MS.comps[id]; if (!c) return;
+  const n = c.panel.querySelectorAll('input:checked').length;
+  c.btn.innerHTML = n === 0 ? 'Tous ▾' : `✓ ${n} sélectionné${n > 1 ? 's' : ''} ▾`;
+  c.btn.classList.toggle('has-sel', n > 0);
+}
+const MULTI_IDS = ['f1-transport','f1-projet','f1-statut','f2-projet','f2-statut',
+                   'f3-transport','f3-projet','f3-statut','f4-projet','f4-statut'];
+function fillSelect(sel, values){ msFill((typeof sel === 'string') ? sel : sel.id, values || []); }
+
+/* ---------- Helpers ---------- */
 function orderedRows(rows, order){
   if (!rows || !rows.length) return rows;
   const known = new Set(order);
@@ -68,7 +130,7 @@ function orderedRows(rows, order){
   return rows.map(r => { const o = {}; cols.forEach(c => o[c] = r[c]); return o; });
 }
 function isTotalRow(r){ return Object.values(r).some(v =>
-  ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique'].includes(String(v ?? ''))); }
+  ['TOTAL','Total','TOTAL SEMAINE','Total par Créneau','Total à commander','Total Théorique','TOTAL (sélection)'].includes(String(v ?? ''))); }
 function fmtPct(v){ return (v === null || v === undefined || v === '') ? '' : Number(v).toFixed(1).replace('.', ',') + ' %'; }
 function tableHTML(rows, o={}){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
@@ -213,11 +275,13 @@ async function autoLoadAll(){
   try {
     const [p2, p3, p4, conf, recap, syn] = await Promise.all(
       ['p2','p3','p4','conf','recap','synthese'].map(getResult));
-    if (p2 && p2.rows){ $('#out-p2').innerHTML = tableHTML(orderedRows(p2.rows, ['Projet', ...JOURS]));
+    if (p2 && p2.rows){
+      $('#out-p2').innerHTML = tableHTML(orderedRows(p2.rows, ['Projet', ...JOURS]));
       if ($('#p2-metrics')) $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
         `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
          <div class="val">${p2.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
-      if (p2.presta) JOURS.forEach(j => { const el = document.getElementById('prest-' + j); if (el) el.value = p2.presta[j] ?? 0; }); }
+      if (p2.presta) JOURS.forEach(j => { const el = document.getElementById('prest-' + j); if (el) el.value = p2.presta[j] ?? 0; });
+    }
     if (p3 && p3.pivot && p3.pivot.rows)
       $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
         tableHTML(orderedRows(p3.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
@@ -242,27 +306,27 @@ async function loadP1(){
     if (p1Cache.week !== week){
       const d = await api('/api/page1');
       p1Cache = {week, rows: d.rows, options: d.options || {}, total: d.total || 0};
-      fillSelect($('#f1-transport'), p1Cache.options.TRANSPORT || []);
-      fillSelect($('#f1-projet'), p1Cache.options.Projet || []);
-      fillSelect($('#f1-statut'), p1Cache.options.Statut || []);
-      fillSelect($('#f2-projet'), p1Cache.options.Projet || []);
-      fillSelect($('#f2-statut'), p1Cache.options.Statut || []);
-      fillSelect($('#f3-transport'), p1Cache.options.TRANSPORT || []);
-      fillSelect($('#f3-projet'), p1Cache.options.Projet || []);
-      fillSelect($('#f3-statut'), p1Cache.options.Statut || []);
-      fillSelect($('#f4-projet'), p1Cache.options.Projet || []);
-      fillSelect($('#f4-statut'), p1Cache.options.Statut || []);
+      fillSelect('f1-transport', p1Cache.options.TRANSPORT || []);
+      fillSelect('f1-projet', p1Cache.options.Projet || []);
+      fillSelect('f1-statut', p1Cache.options.Statut || []);
+      fillSelect('f2-projet', p1Cache.options.Projet || []);
+      fillSelect('f2-statut', p1Cache.options.Statut || []);
+      fillSelect('f3-transport', p1Cache.options.TRANSPORT || []);
+      fillSelect('f3-projet', p1Cache.options.Projet || []);
+      fillSelect('f3-statut', p1Cache.options.Statut || []);
+      fillSelect('f4-projet', p1Cache.options.Projet || []);
+      fillSelect('f4-statut', p1Cache.options.Statut || []);
     }
     applyP1();
   } catch(e){ $('#out-p1').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
 }
 function applyP1(){
-  const t = $('#f1-transport').value, pj = $('#f1-projet').value, st = $('#f1-statut').value;
+  const tr = msValues('f1-transport'), pj = msValues('f1-projet'), st = msValues('f1-statut');
   const q = ($('#f1-search').value || '').trim().toLowerCase();
   let rows = p1Cache.rows;
-  if (t) rows = rows.filter(r => String(r['TRANSPORT'] ?? '') === t);
-  if (pj) rows = rows.filter(r => String(r['Projet'] ?? '') === pj);
-  if (st) rows = rows.filter(r => String(r['Statut'] ?? '') === st);
+  if (tr.length) rows = rows.filter(r => tr.includes(String(r['TRANSPORT'] ?? '')));
+  if (pj.length) rows = rows.filter(r => pj.includes(String(r['Projet'] ?? '')));
+  if (st.length) rows = rows.filter(r => st.includes(String(r['Statut'] ?? '')));
   if (q) rows = rows.filter(r => ['WORKDAY ID','Paid ID','Nom'].some(c => String(r[c] ?? '').toLowerCase().includes(q)));
   $('#cnt-p1').textContent = p1Cache.total ? `${rows.length} ligne(s) affichée(s) sur ${p1Cache.total}` : '';
   $('#out-p1').innerHTML = planTable(rows);
@@ -293,8 +357,14 @@ function planTable(rows){
 }
 ['#f1-transport','#f1-projet','#f1-statut'].forEach(id => on(id, 'change', applyP1));
 on('#f1-search', 'input', debounce(applyP1, 150));
-on('#btn-exp-p1', 'click', () =>
-  window.open('/api/export_page1?' + new URLSearchParams({transport:$('#f1-transport').value, projet:$('#f1-projet').value, statut:$('#f1-statut').value, q:$('#f1-search').value}), '_blank'));
+on('#btn-exp-p1', 'click', () => {
+  const p = new URLSearchParams();
+  msValues('f1-transport').forEach(v => p.append('transport', v));
+  msValues('f1-projet').forEach(v => p.append('projet', v));
+  msValues('f1-statut').forEach(v => p.append('statut', v));
+  p.set('q', $('#f1-search').value);
+  window.open('/api/export_page1?' + p, '_blank');
+});
 
 /* ---------- PAGE 2 ---------- */
 if ($('#p2-presta'))
@@ -302,7 +372,9 @@ if ($('#p2-presta'))
 on('#btn-p2', 'click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
   try {
-    const p = new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value});
+    const p = new URLSearchParams({taux: $('#inp-taux').value});
+    msValues('f2-projet').forEach(v => p.append('projet', v));
+    msValues('f2-statut').forEach(v => p.append('statut', v));
     JOURS.forEach(j => p.set('prest_' + j, intVal('prest-' + j)));
     const d = await api('/api/page2?' + p);
     $('#out-p2').innerHTML = tableHTML(orderedRows(d.rows, ['Projet', ...JOURS]));
@@ -314,7 +386,9 @@ on('#btn-p2', 'click', async () => {
   busy($('#btn-p2'), false);
 });
 on('#btn-exp-p2', 'click', () => {
-  const p = new URLSearchParams({taux: $('#inp-taux').value, projet: $('#f2-projet').value, statut: $('#f2-statut').value});
+  const p = new URLSearchParams({taux: $('#inp-taux').value});
+  msValues('f2-projet').forEach(v => p.append('projet', v));
+  msValues('f2-statut').forEach(v => p.append('statut', v));
   JOURS.forEach(j => p.set('prest_' + j, intVal('prest-' + j)));
   window.open('/api/export_page2?' + p, '_blank');
 });
@@ -323,7 +397,10 @@ on('#btn-exp-p2', 'click', () => {
 on('#btn-p3', 'click', async () => {
   busy($('#btn-p3'), true, 'Calcul…');
   try {
-    const p = new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value});
+    const p = new URLSearchParams();
+    msValues('f3-transport').forEach(v => p.append('transport', v));
+    msValues('f3-projet').forEach(v => p.append('projet', v));
+    msValues('f3-statut').forEach(v => p.append('statut', v));
     const d = await api('/api/page3?' + p);
     $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
       tableHTML(orderedRows(d.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
@@ -332,14 +409,21 @@ on('#btn-p3', 'click', async () => {
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p3'), false);
 });
-on('#btn-exp-p3', 'click', () =>
-  window.open('/api/export_page3?' + new URLSearchParams({transport:$('#f3-transport').value, projet:$('#f3-projet').value, statut:$('#f3-statut').value}), '_blank'));
+on('#btn-exp-p3', 'click', () => {
+  const p = new URLSearchParams();
+  msValues('f3-transport').forEach(v => p.append('transport', v));
+  msValues('f3-projet').forEach(v => p.append('projet', v));
+  msValues('f3-statut').forEach(v => p.append('statut', v));
+  window.open('/api/export_page3?' + p, '_blank');
+});
 
 /* ---------- PAGE 4 ---------- */
 on('#btn-p4', 'click', async () => {
   busy($('#btn-p4'), true, 'Calcul…');
   try {
-    const p = new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value});
+    const p = new URLSearchParams();
+    msValues('f4-projet').forEach(v => p.append('projet', v));
+    msValues('f4-statut').forEach(v => p.append('statut', v));
     const d = await api('/api/page4?' + p);
     $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet</h3>' +
       tableHTML(orderedRows(d.peaks.rows, ['Projet', ...JOURS])) +
@@ -348,8 +432,12 @@ on('#btn-p4', 'click', async () => {
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p4'), false);
 });
-on('#btn-exp-p4', 'click', () =>
-  window.open('/api/export_page4?' + new URLSearchParams({projet:$('#f4-projet').value, statut:$('#f4-statut').value}), '_blank'));
+on('#btn-exp-p4', 'click', () => {
+  const p = new URLSearchParams();
+  msValues('f4-projet').forEach(v => p.append('projet', v));
+  msValues('f4-statut').forEach(v => p.append('statut', v));
+  window.open('/api/export_page4?' + p, '_blank');
+});
 
 /* ---------- PAGE 5 ---------- */
 let p5Rows = null;
@@ -421,7 +509,6 @@ const RECAP_COLS = ['Choix','Nombres','Pourcentage','À commander'];
 const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ', 'Planifié total', 'À commander'];
 let lastRecapData = null;
 
-/* Gère les résultats stockés avec l'ancien libellé PROD / PLANIFIÉ PROD */
 function normalizeRecapLabels(d){
   if (!d) return d;
   const fix = o => { if (o && ('PROD / PLANIFIÉ PROD' in o)){ o['PROD / PLANIFIÉ'] = o['PROD / PLANIFIÉ PROD']; delete o['PROD / PLANIFIÉ PROD']; } return o; };
@@ -431,7 +518,25 @@ function normalizeRecapLabels(d){
   }));
   return d;
 }
-
+function computeDateIso(week, day){
+  try {
+    const m = String(week || '').toUpperCase().match(/S(\d{1,2})/);
+    if (!m) return '';
+    const wk = parseInt(m[1], 10);
+    if (wk < 1 || wk > 53) return '';
+    const now = new Date();
+    for (const y of [now.getFullYear(), now.getFullYear() - 1, now.getFullYear() + 1]){
+      const jan4 = new Date(Date.UTC(y, 0, 4));
+      const dow = jan4.getUTCDay() || 7;
+      const monday = new Date(jan4);
+      monday.setUTCDate(jan4.getUTCDate() - dow + 1 + (wk - 1) * 7);
+      const d = new Date(monday);
+      d.setUTCDate(monday.getUTCDate() + JOURS.indexOf(day));
+      return d.toISOString().slice(0, 10);
+    }
+  } catch(e){}
+  return '';
+}
 function entityTableHTML(E, dayIso){
   const rows = orderedRows(E.rows, RECAP_COLS);
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
@@ -454,28 +559,6 @@ function entityTableHTML(E, dayIso){
   });
   return h + '</tbody></table></div>';
 }
-
-/* Date ISO de secours calculée depuis le n° de semaine (Sxx → lundi + index du jour) */
-function computeDateIso(week, day){
-  try {
-    const m = String(week || '').toUpperCase().match(/S(\d{1,2})/);
-    if (!m) return '';
-    const wk = parseInt(m[1], 10);
-    if (wk < 1 || wk > 53) return '';
-    const now = new Date();
-    for (const y of [now.getFullYear(), now.getFullYear() - 1, now.getFullYear() + 1]){
-      const jan4 = new Date(Date.UTC(y, 0, 4));
-      const dow = jan4.getUTCDay() || 7;
-      const monday = new Date(jan4);
-      monday.setUTCDate(jan4.getUTCDate() - dow + 1 + (wk - 1) * 7);
-      const d = new Date(monday);
-      d.setUTCDate(monday.getUTCDate() + JOURS.indexOf(day));
-      return d.toISOString().slice(0, 10);
-    }
-  } catch(e){}
-  return '';
-}
-
 function renderRecap(d){
   d = normalizeRecapLabels(d);
   lastRecapData = d;
@@ -643,14 +726,15 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse mensuelle (filtres + colonnes redimensionnables) ---------- */
+/* ---------- PAGE 8 : Synthèse (filtres par colonne + resize) ---------- */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
 const SYN_EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme'};
+const SYN_WKEY = 'logiplan_syn_widths';
 let synEdits = {};
 let lastSynData = null;
-let synFilter = { week: '', q: '' };
+let synColFilters = {};
 
 function synthBody(){
   return { month: ($('#inp-month') ? $('#inp-month').value : ''),
@@ -674,13 +758,31 @@ function synthTotalLocal(rows, label){
     Math.round(t['Nombre de plat ajusté'] / t['À commander'] * 1000) / 10 : 0;
   return t;
 }
-
-/* Redimensionnement des colonnes par glisser sur le bord droit des en-têtes */
+function applySynWidths(table){
+  try {
+    const w = JSON.parse(localStorage.getItem(SYN_WKEY) || '{}');
+    if (!Object.keys(w).length) return false;
+    table.style.tableLayout = 'fixed';
+    table.querySelectorAll('thead th[data-col]').forEach(th => {
+      if (w[th.dataset.col]) th.style.width = w[th.dataset.col] + 'px';
+    });
+    return true;
+  } catch(e){ return false; }
+}
+function saveSynWidths(table){
+  try {
+    const w = {};
+    table.querySelectorAll('thead th[data-col]').forEach(th => {
+      const px = th.getBoundingClientRect().width;
+      if (px) w[th.dataset.col] = Math.round(px);
+    });
+    localStorage.setItem(SYN_WKEY, JSON.stringify(w));
+  } catch(e){}
+}
 function enableSynResize(table){
   if (!table || table.dataset.resizable) return;
   table.dataset.resizable = '1';
-  const heads = Array.from(table.querySelectorAll('thead th'));
-  heads.forEach(th => {
+  table.querySelectorAll('thead th[data-col]').forEach(th => {
     const handle = document.createElement('span');
     handle.className = 'col-resizer';
     handle.title = 'Glisser pour redimensionner';
@@ -689,16 +791,17 @@ function enableSynResize(table){
       const startW = th.getBoundingClientRect().width;
       const startX = ev.clientX;
       if (getComputedStyle(table).tableLayout !== 'fixed'){
+        const heads = Array.from(table.querySelectorAll('thead th[data-col]'));
         heads.forEach(t => { t.style.width = t.getBoundingClientRect().width + 'px'; });
-        const total = heads.reduce((s, t) => s + t.getBoundingClientRect().width, 0);
         table.style.tableLayout = 'fixed';
-        table.style.width = Math.ceil(total) + 'px';
+        table.style.width = Math.ceil(heads.reduce((s, t) => s + t.getBoundingClientRect().width, 0)) + 'px';
       }
       const move = e => { th.style.width = Math.max(48, startW + e.clientX - startX) + 'px'; };
       const up = () => {
         document.removeEventListener('mousemove', move);
         document.removeEventListener('mouseup', up);
         document.body.style.cursor = '';
+        saveSynWidths(table);
       };
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', up);
@@ -707,38 +810,31 @@ function enableSynResize(table){
     th.appendChild(handle);
   });
 }
-
 function renderSynthese(d){
   lastSynData = d;
   if ($('#inp-month') && !$('#inp-month').value) $('#inp-month').value = d.month || '';
   if ($('#inp-pu') && document.activeElement !== $('#inp-pu')) $('#inp-pu').value = d.pu ?? 0;
 
   const all = synthAllRows(d);
+  const active = Object.entries(synColFilters).filter(([, v]) => String(v).trim() !== '');
   let rows = all;
-  if (synFilter.week) rows = rows.filter(r => String(r['Semaine'] ?? '') === synFilter.week);
-  if (synFilter.q){
-    const s = synFilter.q.toLowerCase();
-    rows = rows.filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
+  if (active.length){
+    rows = rows.filter(r => active.every(([c, f]) =>
+      String(r[c] ?? '').toLowerCase().includes(String(f).toLowerCase())));
   }
-  const filtered = !!(synFilter.week || synFilter.q);
-  const weeks = [...new Set(all.map(r => String(r['Semaine'] ?? '')))].sort();
-
-  let h = '<div class="toolbar syn-filters">' +
-    '<select id="syn-f-week"><option value="">Semaine : toutes</option>' +
-    weeks.map(w => `<option${w === synFilter.week ? ' selected' : ''}>${esc(w)}</option>`).join('') +
-    '</select>' +
-    `<input type="text" id="syn-f-q" placeholder="🔍 Filtrer les lignes…" value="${esc(synFilter.q)}">` +
-    '<button class="btn" id="syn-f-reset">✖ Réinitialiser</button>' +
-    (filtered ? `<span class="count">${rows.length} ligne(s) sur ${all.length}</span>` : '') +
-    '</div>';
-
+  const filtered = active.length > 0;
   const totalRow = filtered ? synthTotalLocal(rows, 'TOTAL (sélection)')
                             : (d.rows || []).find(r => String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL'));
   const body = rows.concat(totalRow ? [totalRow] : []);
+  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.fcol
+                  ? document.activeElement.dataset.fcol : null;
 
-  h += '<div class="tscroll"><table class="data syn" id="syn-table"><thead><tr>' +
-    SYN_COLS.map(c => `<th>${esc(c)}<span class="col-resizer"></span></th>`).join('') +
-    '</tr></thead><tbody>';
+  let h = `<div class="count">${filtered ? rows.length + ' ligne(s) filtrée(s) sur ' + all.length : all.length + ' ligne(s)'}</div>`;
+  h += '<div class="tscroll"><table class="data syn" id="syn-table"><thead>';
+  h += '<tr class="hrow">' + SYN_COLS.map(c => `<th data-col="${esc(c)}">${esc(c)}</th>`).join('') + '</tr>';
+  h += '<tr class="frow">' + SYN_COLS.map(c =>
+        `<th><input type="text" data-fcol="${esc(c)}" placeholder="Filtrer…" value="${esc(synColFilters[c] || '')}"></th>`).join('') + '</tr>';
+  h += '</thead><tbody>';
   body.forEach(r => {
     const isTotal = String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL');
     h += `<tr class="${isTotal ? 'total' : ''}">`;
@@ -756,16 +852,25 @@ function renderSynthese(d){
     h += '</tr>';
   });
   h += '</tbody></table></div>';
+  if (filtered) h += '<div class="toolbar"><button class="btn" id="syn-f-reset">✖ Réinitialiser les filtres</button></div>';
   $('#out-p8').innerHTML = h;
 
-  enableSynResize($('#syn-table'));
-
-  const fw = $('#syn-f-week');
-  if (fw) fw.addEventListener('change', () => { synFilter.week = fw.value; renderSynthese(lastSynData); });
-  const fq = $('#syn-f-q');
-  if (fq) fq.addEventListener('input', debounce(() => { synFilter.q = fq.value.trim(); renderSynthese(lastSynData); }, 250));
+  const table = $('#syn-table');
+  applySynWidths(table);
+  enableSynResize(table);
+  if (focused){
+    const inp = table.querySelector(`thead input[data-fcol="${CSS.escape(focused)}"]`);
+    if (inp){ inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  }
+  table.querySelectorAll('thead input[data-fcol]').forEach(inp =>
+    inp.addEventListener('input', debounce(() => {
+      const c = inp.dataset.fcol;
+      if (inp.value.trim() === '') delete synColFilters[c];
+      else synColFilters[c] = inp.value.trim();
+      renderSynthese(lastSynData);
+    }, 350)));
   const fr = $('#syn-f-reset');
-  if (fr) fr.addEventListener('click', () => { synFilter = {week: '', q: ''}; renderSynthese(lastSynData); });
+  if (fr) fr.addEventListener('click', () => { synColFilters = {}; renderSynthese(lastSynData); });
 
   $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', debounce(() => {
     const diso = inp.dataset.date, champ = inp.dataset.champ;
@@ -809,13 +914,13 @@ tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2p
 @page{size:A4 landscape;margin:10mm}</style></head><body>${h}</body></html>`);
 });
 
-
 /* ---------- Démarrage ---------- */
 async function startApp(){
   await restoreIfEmpty();
   try { await refreshState(); await loadP1(); await autoLoadAll(); } catch(e){}
 }
 (async function boot(){
+  MULTI_IDS.forEach(initMultiSelect);
   try {
     const me = await api('/api/me');
     if (!me.role){ window.location.href = '/'; return; }
