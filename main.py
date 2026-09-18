@@ -132,7 +132,6 @@ def load_state():
 
 STATE = load_state()
 
-# Restauration depuis MongoDB si le disque local a été vidé (redéploiement Render)
 if not STATE['plannings'] and mongo_col is not None:
     try:
         doc = mongo_col.find_one({'_id': 'state'})
@@ -192,7 +191,6 @@ def get_week_taux(week):
     return {j: 0 for j in JOURS}
 
 def get_menu_edits(week):
-    """Effectifs HORS PROD saisis manuellement, mémorisés par date réelle."""
     dates = derive_week_dates(week)
     eds = STATE.get('menu_edits') if isinstance(STATE.get('menu_edits'), dict) else {}
     out = {}
@@ -400,7 +398,6 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
             is_prod = (ent == "PROD / PLANIFIÉ")
             facteur = (1.0 - taux / 100.0) if is_prod else 1.0
             planned = planned_prod[j] if is_prod else planned_horsprod[j]
-            # Nombres de base (commandes) + saisies manuelles HORS PROD
             ent_menus = []
             for m in menu_list:
                 base_n = menus_cnt.get((j, ent, m), 0)
@@ -564,10 +561,12 @@ def parse_reference(src_bytes):
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
 def _apply_filters(pl):
+    """Filtres serveur, multi-valeurs acceptées (transport=A&transport=B...)."""
     out = pl.copy()
     for col, key in (('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')):
-        v = (request.args.get(key) or '').strip()
-        if v: out = out[out[col].astype(str) == v]
+        vals = [str(v).strip() for v in request.args.getlist(key) if str(v).strip()]
+        if vals:
+            out = out[out[col].astype(str).isin(vals)]
     q = (request.args.get('q') or '').strip()
     if q:
         ql = q.lower()
