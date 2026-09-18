@@ -191,4 +191,25 @@ table.syn td.editcell input:focus{outline:2px solid var(--teal);background:#fff}
 .syn-filters input[type=text]{min-width:200px}
 .col-resizer{position:absolute;right:-3px;top:0;width:9px;height:100%;cursor:col-resize;z-index:6}
 .col-resizer:hover{background:rgba(37,226,204,.55)}
+/* ===== Multi-select à cases à cocher ===== */
+.ms{position:relative;display:inline-block;min-width:150px}
+.ms-btn{width:100%;text-align:left;padding:8px 12px;border:1px solid var(--line);border-radius:10px;
+  font-size:13px;background:#fff;cursor:pointer;color:var(--txt)}
+.ms-btn.has-sel{border-color:var(--teal);background:var(--teal-soft);color:var(--navy);font-weight:600}
+.ms-panel{display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:500;min-width:230px;max-height:260px;
+  overflow:auto;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:6px}
+.ms.open .ms-panel{display:block}
+.ms-opt{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer}
+.ms-opt:hover{background:var(--teal-soft)}
+.ms-empty{font-size:12px;color:var(--muted);padding:6px}
+
+/* ===== Synthèse : rangée de filtres par colonne ===== */
+table.syn thead tr.hrow th{height:48px;vertical-align:middle}
+table.syn thead tr.frow th{top:48px;padding:3px 4px;background:#0b4f74;z-index:4}
+table.syn thead tr.frow input{width:100%;min-width:52px;padding:3px 6px;border:none;border-radius:6px;
+  font-size:10.5px;background:#fff;color:#223;box-sizing:border-box}
+table.syn thead tr.frow input::placeholder{color:#9ab;font-style:italic}
+
+/* ===== Session Viewer : éléments grisés ===== */
+.viewer-locked{opacity:.55;pointer-events:none}
 }
