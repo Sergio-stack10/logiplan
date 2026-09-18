@@ -7,8 +7,8 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function on(sel, evt, fn){ const el = typeof sel === 'string' ? document.querySelector(sel) : sel; if (el) el.addEventListener(evt, fn); }
 
-/* ---------- Overlay de chargement global ---------- */
-let pendingReqs = 0, loadingTimer = null;
+/* ---------- Overlay de chargement global (avec watchdog anti-figage) ---------- */
+let pendingReqs = 0, loadingTimer = null, loadingWatchdog = null;
 function showLoadingOverlay(label){
   let ov = document.getElementById('loading-overlay');
   if (!ov){
@@ -19,8 +19,11 @@ function showLoadingOverlay(label){
   }
   ov.querySelector('.load-txt').textContent = label || 'Chargement des données…';
   ov.classList.add('active');
+  clearTimeout(loadingWatchdog);
+  loadingWatchdog = setTimeout(() => { pendingReqs = 0; hideLoadingOverlay(); }, 30000);
 }
 function hideLoadingOverlay(){
+  clearTimeout(loadingWatchdog);
   const ov = document.getElementById('loading-overlay');
   if (ov) ov.classList.remove('active');
 }
@@ -34,13 +37,14 @@ function trackReq(promise){
   });
 }
 async function api(url, opts={}){
-  return trackReq((async () => {
+  const p = (async () => {
     const r = await fetch(url, opts); let d = {};
     try { d = await r.json(); } catch(e){}
     if (r.status === 401){ window.location.href = '/'; throw new Error("Connexion requise"); }
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     return d;
-  })());
+  })();
+  return (opts && opts.silent) ? p : trackReq(p);
 }
 async function getResult(key){ try { return await api('/api/result/' + key); } catch(e){ return null; } }
 function debounce(fn, ms=250){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
@@ -639,26 +643,104 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse mensuelle ---------- */
+/* ---------- PAGE 8 : Synthèse mensuelle (filtres + colonnes redimensionnables) ---------- */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
 const SYN_EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme'};
 let synEdits = {};
 let lastSynData = null;
+let synFilter = { week: '', q: '' };
 
 function synthBody(){
   return { month: ($('#inp-month') ? $('#inp-month').value : ''),
            pu: numVal('inp-pu'), edits: ROLE === 'admin' ? synEdits : {} };
 }
+function synthAllRows(d){
+  return (d.rows || []).filter(r => !String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL'));
+}
+function synthTotalLocal(rows, label){
+  const t = {'Date': label, 'Semaine': '', 'DateIso': ''};
+  const sum = k => rows.reduce((s, r) => s + Number(r[k] ?? 0), 0);
+  ['Planifié total','À commander','Commande finale','Consommé','Non consommé','À facturer',
+   'MONTANT DA MGA HT','Nombre de plat ajusté'].forEach(k => t[k] = sum(k));
+  const done = rows.filter(r => Number(r['Consommé'] ?? 0) > 0);
+  const qn = done.reduce((s, r) => s + Number(r['Consommé'] ?? 0), 0);
+  const qd = done.reduce((s, r) => s + Number(r['Commande finale'] ?? 0), 0);
+  t['QS (%)'] = qd > 0 ? Math.round(qn / qd * 1000) / 10 : 0;
+  t['QS conso vs commandé final (%)'] = (t['Commande finale'] > t['Consommé']) ? 100 :
+    ((t['Commande finale'] > 0) ? Math.round(t['Consommé'] / t['Commande finale'] * 1000) / 10 : 0);
+  t['Pourcentage plat ajusté (%)'] = (t['À commander'] > 0) ?
+    Math.round(t['Nombre de plat ajusté'] / t['À commander'] * 1000) / 10 : 0;
+  return t;
+}
+
+/* Redimensionnement des colonnes par glisser sur le bord droit des en-têtes */
+function enableSynResize(table){
+  if (!table || table.dataset.resizable) return;
+  table.dataset.resizable = '1';
+  const heads = Array.from(table.querySelectorAll('thead th'));
+  heads.forEach(th => {
+    const handle = document.createElement('span');
+    handle.className = 'col-resizer';
+    handle.title = 'Glisser pour redimensionner';
+    handle.addEventListener('mousedown', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      const startW = th.getBoundingClientRect().width;
+      const startX = ev.clientX;
+      if (getComputedStyle(table).tableLayout !== 'fixed'){
+        heads.forEach(t => { t.style.width = t.getBoundingClientRect().width + 'px'; });
+        const total = heads.reduce((s, t) => s + t.getBoundingClientRect().width, 0);
+        table.style.tableLayout = 'fixed';
+        table.style.width = Math.ceil(total) + 'px';
+      }
+      const move = e => { th.style.width = Math.max(48, startW + e.clientX - startX) + 'px'; };
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        document.body.style.cursor = '';
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+      document.body.style.cursor = 'col-resize';
+    });
+    th.appendChild(handle);
+  });
+}
+
 function renderSynthese(d){
   lastSynData = d;
   if ($('#inp-month') && !$('#inp-month').value) $('#inp-month').value = d.month || '';
   if ($('#inp-pu') && document.activeElement !== $('#inp-pu')) $('#inp-pu').value = d.pu ?? 0;
-  let h = '<div class="tscroll"><table class="data syn"><thead><tr>' +
-    SYN_COLS.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
-  d.rows.forEach(r => {
-    const isTotal = String(r['Date']).toUpperCase().startsWith('TOTAL');
+
+  const all = synthAllRows(d);
+  let rows = all;
+  if (synFilter.week) rows = rows.filter(r => String(r['Semaine'] ?? '') === synFilter.week);
+  if (synFilter.q){
+    const s = synFilter.q.toLowerCase();
+    rows = rows.filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
+  }
+  const filtered = !!(synFilter.week || synFilter.q);
+  const weeks = [...new Set(all.map(r => String(r['Semaine'] ?? '')))].sort();
+
+  let h = '<div class="toolbar syn-filters">' +
+    '<select id="syn-f-week"><option value="">Semaine : toutes</option>' +
+    weeks.map(w => `<option${w === synFilter.week ? ' selected' : ''}>${esc(w)}</option>`).join('') +
+    '</select>' +
+    `<input type="text" id="syn-f-q" placeholder="🔍 Filtrer les lignes…" value="${esc(synFilter.q)}">` +
+    '<button class="btn" id="syn-f-reset">✖ Réinitialiser</button>' +
+    (filtered ? `<span class="count">${rows.length} ligne(s) sur ${all.length}</span>` : '') +
+    '</div>';
+
+  const totalRow = filtered ? synthTotalLocal(rows, 'TOTAL (sélection)')
+                            : (d.rows || []).find(r => String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL'));
+  const body = rows.concat(totalRow ? [totalRow] : []);
+
+  h += '<div class="tscroll"><table class="data syn" id="syn-table"><thead><tr>' +
+    SYN_COLS.map(c => `<th>${esc(c)}<span class="col-resizer"></span></th>`).join('') +
+    '</tr></thead><tbody>';
+  body.forEach(r => {
+    const isTotal = String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL');
     h += `<tr class="${isTotal ? 'total' : ''}">`;
     SYN_COLS.forEach(c => {
       if (!isTotal && SYN_EDITABLE[c] && ROLE === 'admin'){
@@ -675,6 +757,16 @@ function renderSynthese(d){
   });
   h += '</tbody></table></div>';
   $('#out-p8').innerHTML = h;
+
+  enableSynResize($('#syn-table'));
+
+  const fw = $('#syn-f-week');
+  if (fw) fw.addEventListener('change', () => { synFilter.week = fw.value; renderSynthese(lastSynData); });
+  const fq = $('#syn-f-q');
+  if (fq) fq.addEventListener('input', debounce(() => { synFilter.q = fq.value.trim(); renderSynthese(lastSynData); }, 250));
+  const fr = $('#syn-f-reset');
+  if (fr) fr.addEventListener('click', () => { synFilter = {week: '', q: ''}; renderSynthese(lastSynData); });
+
   $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', debounce(() => {
     const diso = inp.dataset.date, champ = inp.dataset.champ;
     synEdits[diso] = synEdits[diso] || {};
@@ -685,7 +777,8 @@ function renderSynthese(d){
 async function genSynthese(showToast = true){
   busy($('#btn-p8'), true, 'Calcul…');
   try {
-    renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())}));
+    renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(synthBody()), silent: !showToast}));
     synEdits = {};
     if (showToast) toast('Synthèse générée ✅');
   } catch(e){ $('#out-p8').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; if (showToast) toast(esc(e.message), 'err'); }
@@ -715,6 +808,7 @@ tbody tr:nth-child(odd) td{background:#f8fbfd}
 tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2px solid #003D5B}
 @page{size:A4 landscape;margin:10mm}</style></head><body>${h}</body></html>`);
 });
+
 
 /* ---------- Démarrage ---------- */
 async function startApp(){
