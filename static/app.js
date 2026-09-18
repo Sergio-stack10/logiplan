@@ -7,11 +7,7 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function on(sel, evt, fn){ const el = typeof sel === 'string' ? document.querySelector(sel) : sel; if (el) el.addEventListener(evt, fn); }
 
-function toast(text, type='ok'){
-  const t = document.createElement('div'); t.className = 'toast ' + type; t.innerHTML = text;
-  $('#toasts').appendChild(t);
-  setTimeout(()=>{ t.classList.add('out'); setTimeout(()=>t.remove(), 350); }, 4500);
-}
+/* ---------- Overlay de chargement global ---------- */
 let pendingReqs = 0, loadingTimer = null;
 function showLoadingOverlay(label){
   let ov = document.getElementById('loading-overlay');
@@ -100,9 +96,7 @@ const ADMIN_CONTROL_IDS = ['btn-import','inp-planning','inp-commande','inp-refer
   'btn-p7','btn-p6','btn-p8','btn-exp-p2'];
 function applyRoleUI(){
   const viewer = (ROLE === 'viewer');
-  // 1) Masquage par classe (éléments marqués admin-only dans le HTML)
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', viewer));
-  // 2) Filet de sécurité : grisage par ID, même si la classe manque dans le HTML
   ADMIN_CONTROL_IDS.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -113,6 +107,10 @@ function applyRoleUI(){
   if (b) b.innerHTML = viewer ? '👁️ Visualiseur' : '🛡️ Admin';
   ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
+on('#btn-logout', 'click', async () => {
+  try { await api('/api/logout', {method:'POST'}); } catch(e){}
+  window.location.href = '/';
+});
 
 /* ---------- IndexedDB ---------- */
 function idbOpen(){ return new Promise((res, rej) => {
@@ -417,7 +415,43 @@ function recapBody(){ return { taux: Object.fromEntries(JOURS.map(j => [j, tauxB
 const RECAP_COLS = ['Choix','Nombres','Pourcentage','À commander'];
 const SUMMARY_COLS = ['Jour', 'HORS PROD', 'PROD / PLANIFIÉ', 'Planifié total', 'À commander'];
 let lastRecapData = null;
+
+/* Gère les résultats stockés avec l'ancien libellé PROD / PLANIFIÉ PROD */
+function normalizeRecapLabels(d){
+  if (!d) return d;
+  const fix = o => { if (o && ('PROD / PLANIFIÉ PROD' in o)){ o['PROD / PLANIFIÉ'] = o['PROD / PLANIFIÉ PROD']; delete o['PROD / PLANIFIÉ PROD']; } return o; };
+  (d.summary_rows || []).forEach(fix);
+  Object.values(d.days || {}).forEach(day => (day.entities || []).forEach(e => {
+    if (e.entity === 'PROD / PLANIFIÉ PROD') e.entity = 'PROD / PLANIFIÉ';
+  }));
+  return d;
+}
+
+function entityTableHTML(E, dayIso){
+  const rows = orderedRows(E.rows, RECAP_COLS);
+  if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
+  const cols = Object.keys(rows[0]);
+  const editable = (ROLE === 'admin' && E.entity === 'HORS PROD' && dayIso);
+  let h = '<div class="tscroll"><table class="data"><thead><tr>' +
+          cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+  rows.forEach(r => {
+    const c0 = String(r['Choix'] ?? '');
+    let cls = '';
+    if (c0 === 'TOTAL') cls = 'total'; else if (c0 === 'SANS CHOIX') cls = 'sanschoix';
+    h += `<tr class="${cls}">` + cols.map(c => {
+      let v = r[c];
+      if (c === 'Pourcentage') v = fmtPct(v);
+      if (c === 'Nombres' && editable && c0 !== 'TOTAL' && c0 !== 'SANS CHOIX'){
+        return `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(dayIso)}" data-menu="${esc(c0)}" value="${Number(r[c] ?? 0)}"></td>`;
+      }
+      return `<td title="${esc(v)}">${esc(v)}</td>`;
+    }).join('') + '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+
 function renderRecap(d){
+  d = normalizeRecapLabels(d);
   lastRecapData = d;
   let h = (d.warnings || []).map(w => `<div class="msg warn">⚠️ ${esc(w)}</div>`).join('');
   h += '<h3 class="sub">📈 Synthèse de la semaine (repas à préparer)</h3>' +
@@ -442,7 +476,7 @@ function renderRecap(d){
       h += `<div class="entity-row"><div class="entity-badge" style="background:${E.color}">${esc(E.entity)}</div>
         <div class="entity-body"><div class="entity-meta">Planifiés : <b>${E.planned_n}</b> ·
         SANS CHOIX : <b>${E.sans_choix}</b> · Absences déclarées : <b>${E.abs_prevues}</b></div>
-        ${tableHTML(orderedRows(E.rows, RECAP_COLS), {recap:true})}</div></div>`;
+        ${entityTableHTML(E, D.dateIso)}</div></div>`;
     }
     h += '</div>';
   }
@@ -452,6 +486,15 @@ function renderRecap(d){
     tauxByDay[inp.dataset.dtaux] = parseFloat(inp.value) || 0;
     calcP6();
   }));
+  $$('#out-p6 .editcell input[data-menu]').forEach(inp => inp.addEventListener('change', debounce(async () => {
+    if (!inp.dataset.date || !inp.dataset.menu) return;
+    try {
+      await api('/api/menu_edit', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({date: inp.dataset.date, menu: inp.dataset.menu, nombres: parseInt(inp.value) || 0})});
+      await calcP6();
+      toast('Effectif « ' + esc(inp.dataset.menu) + ' » enregistré pour cette date');
+    } catch(e){ toast(esc(e.message), 'err'); }
+  }, 500)));
 }
 async function calcP6(){
   busy($('#btn-p6'), true, 'Calcul…');
