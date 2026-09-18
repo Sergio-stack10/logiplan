@@ -924,9 +924,9 @@ def _save_p2_refs(week, pivot, prest):
 @admin_required
 def api_page2():
     week, pl, _ = current_data()
-    if pl is None: return {'rows': [], 'metrics': {}}
+    if pl is None: return {'rows': [], 'metrics': {}, 'presta': {}}
     pl = _apply_filters(pl)
-    if pl.empty: return {'rows': [], 'metrics': {j: 0 for j in JOURS}}
+    if pl.empty: return {'rows': [], 'metrics': {j: 0 for j in JOURS}, 'presta': {j: 0 for j in JOURS}}
     taux = _to_float(request.args.get('taux'), 0)
     prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
@@ -934,7 +934,8 @@ def api_page2():
     p = df_payload(pivot)
     tot = pivot[pivot['Projet'] == 'Total à commander']
     p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
-    store_result(week, 'p2', {'rows': p['rows'], 'metrics': p['metrics']})
+    p['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
+    store_result(week, 'p2', {'rows': p['rows'], 'metrics': p['metrics'], 'presta': p['presta']})
     save_state()
     return p
 
@@ -1221,7 +1222,9 @@ def _synth_compute(body):
     t_conso = sum(r['Consommé'] for r in rows)
     for k in sum_keys:
         total[k] = sum(r[k] for r in rows)
-    total['QS (%)'] = round((t_conso / t_cf * 100) if t_cf > 0 else 0.0, 1)
+    qs_num = sum(r['Consommé'] for r in rows if r['Consommé'] > 0)
+    qs_den = sum(r['Commande finale'] for r in rows if r['Consommé'] > 0)
+    total['QS (%)'] = round((qs_num / qs_den * 100) if qs_den > 0 else 0.0, 1)
     total['QS conso vs commandé final (%)'] = 100.0 if (t_cf > t_conso) else ((t_conso / t_cf * 100) if t_cf > 0 else 0.0)
     total['Pourcentage plat ajusté (%)'] = round((total['Nombre de plat ajusté'] / total['À commander'] * 100)
                                                  if total['À commander'] > 0 else 0.0, 1)
