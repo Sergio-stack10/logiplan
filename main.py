@@ -64,8 +64,6 @@ ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
 # ================= PERSISTANCE MONGODB =================
-# Persistance cloud via MongoDB Atlas (MONGODB_URI dans Render → Environment).
-# Sans cette variable, l'app fonctionne avec la persistance fichier classique.
 mongo_col = None
 Binary = None
 if os.environ.get('MONGODB_URI'):
@@ -126,6 +124,7 @@ def load_state():
     if not isinstance(s.get('calculs'), dict): s['calculs'] = {}
     if not isinstance(s.get('current_week'), (str, type(None))): s['current_week'] = None
     if not isinstance(s.get('synth_edits'), dict): s['synth_edits'] = {}
+    if not isinstance(s.get('menu_edits'), dict): s['menu_edits'] = {}
     if not isinstance(s.get('synth_pu'), (int, float)): s['synth_pu'] = 0
     ref = s.get('reference')
     if ref is not None and not isinstance(ref, pd.DataFrame): s['reference'] = None
@@ -141,6 +140,7 @@ if not STATE['plannings'] and mongo_col is not None:
             restored = pickle.loads(gzip.decompress(doc['blob']))
             if isinstance(restored, dict) and isinstance(restored.get('plannings'), dict):
                 STATE = restored
+                if not isinstance(STATE.get('menu_edits'), dict): STATE['menu_edits'] = {}
                 try:
                     with open(DATA_FILE, 'wb') as f:
                         pickle.dump(STATE, f)
@@ -190,6 +190,18 @@ def get_week_taux(week):
     if isinstance(calc, dict) and isinstance(calc.get('taux'), dict):
         return calc['taux']
     return {j: 0 for j in JOURS}
+
+def get_menu_edits(week):
+    """Effectifs HORS PROD saisis manuellement, mémorisés par date réelle."""
+    dates = derive_week_dates(week)
+    eds = STATE.get('menu_edits') if isinstance(STATE.get('menu_edits'), dict) else {}
+    out = {}
+    for j, d in dates.items():
+        if not d: continue
+        e = eds.get(d.isoformat())
+        if isinstance(e, dict) and e:
+            out[j] = {k: max(0, _to_int(v)) for k, v in e.items()}
+    return out
 
 def store_result(week, key, payload):
     if week:
@@ -338,7 +350,7 @@ def derive_week_dates(week_key):
         pass
     return {}
 
-def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs, presta_effectifs):
+def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs, presta_effectifs, menu_edits=None):
     theo = theo_effectifs or {}
     presta = presta_effectifs or {}
     planned_prod_ids = {j: set() for j in jours}
@@ -383,11 +395,23 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
     for j in jours:
         menu_list = [m for m, _ in sorted(day_menu_totals.get(j, {}).items(), key=lambda kv: (-kv[1], kv[0]))]
         taux = _to_float(taux_by_day.get(j, 0))
+        edits_j_all = (menu_edits or {}).get(j) or {}
         for ent in ENTITES:
             is_prod = (ent == "PROD / PLANIFIÉ")
             facteur = (1.0 - taux / 100.0) if is_prod else 1.0
             planned = planned_prod[j] if is_prod else planned_horsprod[j]
-            ent_menus = [(m, menus_cnt.get((j, ent, m), 0)) for m in menu_list]
+            # Nombres de base (commandes) + saisies manuelles HORS PROD
+            ent_menus = []
+            for m in menu_list:
+                base_n = menus_cnt.get((j, ent, m), 0)
+                if ent == "HORS PROD" and m in edits_j_all:
+                    base_n = max(0, _to_int(edits_j_all[m]))
+                ent_menus.append((m, base_n))
+            if ent == "HORS PROD":
+                for m, v in edits_j_all.items():
+                    if m not in menu_list:
+                        ent_menus.append((m, max(0, _to_int(v))))
+            ent_menus = [(m, n) for m, n in ent_menus if n > 0]
             total_menus = sum(n for _, n in ent_menus)
             sans_choix = max(0, planned - total_menus)
             total_n = total_menus + sans_choix
@@ -744,7 +768,8 @@ def api_backup_export():
             calculs[w] = out
     return {'plannings': plannings, 'commandes': commandes, 'reference': ref,
             'calculs': calculs, 'current_week': STATE.get('current_week'),
-            'synth_pu': STATE.get('synth_pu', 0), 'synth_edits': STATE.get('synth_edits', {})}
+            'synth_pu': STATE.get('synth_pu', 0), 'synth_edits': STATE.get('synth_edits', {}),
+            'menu_edits': STATE.get('menu_edits', {})}
 
 @app.post('/api/backup_import')
 @admin_required
@@ -779,6 +804,7 @@ def api_backup_import():
         STATE['reference'] = ref
         STATE['calculs'] = calculs
         if isinstance(b.get('synth_edits'), dict): STATE['synth_edits'] = b['synth_edits']
+        if isinstance(b.get('menu_edits'), dict): STATE['menu_edits'] = b['menu_edits']
         STATE['synth_pu'] = _to_float(b.get('synth_pu'), 0)
         cw = b.get('current_week')
         STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
@@ -846,6 +872,7 @@ def api_delete_week():
     STATE['plannings'].pop(w, None); STATE['commandes'].pop(w, None); STATE['calculs'].pop(w, None)
     for d in derive_week_dates(w).values():
         STATE.get('synth_edits', {}).pop(d.isoformat(), None)
+        STATE.get('menu_edits', {}).pop(d.isoformat(), None)
     STATE['current_week'] = next(iter(sorted(STATE['plannings'])), None)
     save_state(); return {'ok': True}
 
@@ -1010,12 +1037,32 @@ def api_prefixes():
         app.logger.exception("api_prefixes")
         return jsonify({'error': f"Correspondance impossible : {e}"}), 400
 
+@app.post('/api/menu_edit')
+@admin_required
+def api_menu_edit():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        diso = str(body.get('date') or '')
+        menu = str(body.get('menu') or '').strip()
+        if not diso or not menu:
+            return jsonify({'error': "Requête incomplète"}), 400
+        cur = STATE.setdefault('menu_edits', {}).setdefault(diso, {})
+        if body.get('nombres') is None:
+            cur.pop(menu, None)
+        else:
+            cur[menu] = max(0, _to_int(body.get('nombres')))
+        save_state()
+        return {'ok': True}
+    except Exception as e:
+        app.logger.exception("api_menu_edit")
+        return jsonify({'error': f"Enregistrement impossible : {e}"}), 400
+
 def _recap_compute(body):
     week, pl, cmd = current_data()
     raw_taux = body.get('taux') or {}
     taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
     theo, presta = get_effectifs_refs(week)
-    recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta)
+    recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta, get_menu_edits(week))
     warnings = []
     if theo is None:
         warnings.append("Total Théorique introuvable : calculez la page Effectifs. Planifié PROD = recalcul planning.")
@@ -1051,7 +1098,8 @@ def api_recap():
                 entities.append({'entity': ent, 'color': ENTITY_COLORS[ent],
                                  'planned_n': blk['planned_n'], 'sans_choix': blk['sans_choix'],
                                  'abs_prevues': blk['abs_prevues'], 'rows': rows})
-            days[j] = {'date': date_txt, 'a_commander': a_cmd,
+            days[j] = {'date': date_txt, 'dateIso': (d.isoformat() if d else ''),
+                       'a_commander': a_cmd,
                        'ent_line': " • ".join(f"{e} : {recap[(j, e)]['total_ac']}" for e in ENTITES_MAIN),
                        'entities': entities}
             day_order.append(j)
@@ -1140,7 +1188,7 @@ def _synth_compute(body):
         taux = get_week_taux(w)
         theo, presta = get_effectifs_refs(w)
         recap, day_totals = compute_recap_menus(STATE['plannings'][w], STATE['commandes'].get(w),
-                                                JOURS, taux, theo, presta)
+                                                JOURS, taux, theo, presta, get_menu_edits(w))
         for j in JOURS:
             d = dates.get(j)
             if not d or not (first <= d <= last): continue
