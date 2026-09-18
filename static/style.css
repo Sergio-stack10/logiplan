@@ -222,8 +222,8 @@ table.syn thead tr:first-child th{height:46px;padding-right:30px}
 .viewer-locked{opacity:.55;pointer-events:none}
 
 /* ===== Signature ===== */
-.footer-fix{position:fixed;left:0;bottom:0;width:100%;background:#001a26;color:#ffffff;text-align:center;
-  font-size:12px;padding:8px;z-index:9998;border-top:2px solid var(--teal)}
+.footer-fix{position:fixed;right:14px;bottom:8px;width:auto;background:#001a26;color:#ffffff;
+  font-size:10px;padding:5px 12px;z-index:9998;border-radius:16px;border:1px solid var(--teal)}
 .footer-fix span{color:var(--teal);font-weight:700;letter-spacing:1px}
 
 @media (max-width:900px){
