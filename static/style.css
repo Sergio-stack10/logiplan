@@ -172,7 +172,10 @@ table.syn td.editcell input:focus{outline:2px solid var(--teal);background:#fff}
 .btn-mini{background:rgba(255,255,255,.12);color:#fff;border:none;border-radius:10px;
   padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;transition:.2s;white-space:nowrap}
 .btn-mini:hover{background:#e74c3c}
+/* Session Viewer : fonctions admin grisées */
 .viewer-hidden{display:none!important}
+.viewer-locked{opacity:.55;pointer-events:none}
+.role-badge{color:#ffffff!important}
 /* ===== Overlay de chargement global ===== */
 #loading-overlay{position:fixed;inset:0;background:rgba(0,32,50,.45);backdrop-filter:blur(2px);
   z-index:12000;display:none;align-items:center;justify-content:center}
