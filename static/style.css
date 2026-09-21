@@ -221,23 +221,18 @@ table.syn thead tr:first-child th{height:46px;padding-right:30px}
 /* ===== Session Viewer : éléments grisés ===== */
 .viewer-locked{opacity:.55;pointer-events:none}
 
-/* ===== Signature ===== */
-.footer-fix{position:fixed;right:14px;bottom:8px;width:auto;background:#001a26;color:#ffffff;
-  font-size:10px;padding:5px 12px;z-index:9998;border-radius:16px;border:1px solid var(--teal)}
-.footer-fix span{color:var(--teal);font-weight:700;letter-spacing:1px}
-
-@media (max-width:900px){
-  .metrics{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
-  .layout{flex-direction:column}
-  #sidebar{width:100%}
-
-/* ===== Synthèse : lignes sous-total par semaine ===== */
+/* ===== Sous-total semaine : jaune ambré visible ===== */
 table.data > tbody > tr.subtotal > td,
 table.syn tbody tr.subtotal td,
 table.data tr.subtotal td{
   font-weight:700 !important;
-  background:#cfe0f5 !important;
-  border-top:1px solid #7fa8d0 !important;
-  border-bottom:1px solid #7fa8d0 !important;
+  background:#fdf3d7 !important;
+  border-top:1px solid #e8c66a !important;
+  border-bottom:1px solid #e8c66a !important;
 }
+
+/* ===== Signature discrète en bas à droite ===== */
+.footer-fix{position:fixed;right:14px;bottom:8px;width:auto;background:transparent;color:#8aa9b8;
+  font-size:9px;padding:4px 6px;z-index:9998;border:none;box-shadow:none;border-radius:0}
+.footer-fix span{color:var(--teal);font-weight:700;letter-spacing:1px}
 }
