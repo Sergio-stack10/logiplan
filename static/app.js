@@ -726,7 +726,7 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse (filtres par colonne + resize) ---------- */
+/* ---------- PAGE 8 : Synthèse (filtres style Excel dans les en-têtes) ---------- */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
@@ -734,7 +734,8 @@ const SYN_EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme
 const SYN_WKEY = 'logiplan_syn_widths';
 let synEdits = {};
 let lastSynData = null;
-let synColFilters = {};
+let synColFilters = {};        // {colonne: Set des valeurs affichées} — style Excel
+const EMPTY_VAL = '(vide)';
 
 function synthBody(){
   return { month: ($('#inp-month') ? $('#inp-month').value : ''),
@@ -743,6 +744,31 @@ function synthBody(){
 function synthAllRows(d){
   return (d.rows || []).filter(r => !String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL'));
 }
+function cellVal(r, c){
+  const v = r[c];
+  if (v === null || v === undefined || String(v).trim() === '') return EMPTY_VAL;
+  return String(v);
+}
+
+function buildSynBody(rows, totalRow){
+  const body = [];
+  let curWeek = null, curRows = [];
+  const flush = () => {
+    if (curWeek && curRows.length) body.push(synthTotalLocal(curRows, 'Sous-total ' + curWeek));
+    curWeek = null; curRows = [];
+  };
+  rows.forEach(r => {
+    const w = String(r['Semaine'] ?? '');
+    if (curWeek !== null && w !== curWeek) flush();
+    curWeek = w;
+    curRows.push(r);
+    body.push(r);
+  });
+  flush();
+  if (totalRow) body.push(totalRow);
+  return body;
+}
+
 function synthTotalLocal(rows, label){
   const t = {'Date': label, 'Semaine': '', 'DateIso': ''};
   const sum = k => rows.reduce((s, r) => s + Number(r[k] ?? 0), 0);
@@ -758,6 +784,75 @@ function synthTotalLocal(rows, label){
     Math.round(t['Nombre de plat ajusté'] / t['À commander'] * 1000) / 10 : 0;
   return t;
 }
+function synFiltersActive(){ return Object.keys(synColFilters).length > 0; }
+function synRowPasses(r){
+  for (const [col, keep] of Object.entries(synColFilters)){
+    if (!keep.has(cellVal(r, col))) return false;
+  }
+  return true;
+}
+
+/* ---------- Popover de filtre (unique, style Excel) ---------- */
+function closeSynPopover(){ const p = document.getElementById('syn-popover'); if (p) p.remove(); }
+function openSynPopover(col, anchorTh){
+  closeSynPopover();
+  const rows = synthAllRows(lastSynData);
+  const uniq = [...new Set(rows.map(r => cellVal(r, col)))].sort((a, b) => a.localeCompare(b, 'fr', {numeric: true}));
+  const keep = synColFilters[col] || new Set(uniq);
+  const pop = document.createElement('div');
+  pop.id = 'syn-popover';
+  pop.innerHTML = `
+    <div class="sp-head"><b>${esc(col)}</b><button type="button" class="sp-close" title="Fermer">✕</button></div>
+    <input type="text" class="sp-search" placeholder="🔍 Rechercher une valeur…">
+    <div class="sp-actions">
+      <button type="button" class="sp-link" data-act="all">Tout cocher</button>
+      <button type="button" class="sp-link" data-act="none">Tout décocher</button>
+      <button type="button" class="sp-link" data-act="clear">Effacer le filtre</button>
+    </div>
+    <div class="sp-list">
+      ${uniq.map(v => `<label class="sp-opt"><input type="checkbox" value="${esc(v)}"${keep.has(v) ? ' checked' : ''}> ${esc(v)}</label>`).join('') || '<div class="ms-empty">—</div>'}
+    </div>
+    <div class="sp-foot"><button type="button" class="btn accent sp-ok">Appliquer</button></div>`;
+  document.body.appendChild(pop);
+  const r = anchorTh.getBoundingClientRect();
+  const pw = Math.max(240, Math.min(r.width + 40, 320));
+  pop.style.width = pw + 'px';
+  let left = Math.min(r.left, window.innerWidth - pw - 8);
+  pop.style.left = Math.max(8, left) + 'px';
+  pop.style.top = (r.bottom + 6) + 'px';
+
+  const search = pop.querySelector('.sp-search');
+  search.addEventListener('input', () => {
+    const s = search.value.trim().toLowerCase();
+    pop.querySelectorAll('.sp-opt').forEach(l => {
+      l.style.display = l.textContent.toLowerCase().includes(s) ? '' : 'none';
+    });
+  });
+  const checkedMap = () => new Set(Array.from(pop.querySelectorAll('.sp-list input:checked')).map(cb => cb.value));
+  pop.querySelector('.sp-close').addEventListener('click', closeSynPopover);
+  pop.querySelectorAll('.sp-link').forEach(btn => btn.addEventListener('click', () => {
+    const act = btn.dataset.act;
+    if (act === 'all') pop.querySelectorAll('.sp-list input').forEach(cb => cb.checked = true);
+    if (act === 'none') pop.querySelectorAll('.sp-list input').forEach(cb => cb.checked = false);
+    if (act === 'clear'){
+      delete synColFilters[col];
+      closeSynPopover(); renderSynthese(lastSynData);
+    }
+  }));
+  pop.querySelector('.sp-ok').addEventListener('click', () => {
+    const set = checkedMap();
+    if (set.size >= uniq.length) delete synColFilters[col];
+    else synColFilters[col] = set;
+    closeSynPopover(); renderSynthese(lastSynData);
+  });
+  setTimeout(() => {
+    const close = e => { if (!pop.contains(e.target)){ closeSynPopover(); document.removeEventListener('mousedown', close); } };
+    document.addEventListener('mousedown', close);
+  }, 0);
+  search.focus();
+}
+
+/* ---------- Largeurs mémorisées ---------- */
 function applySynWidths(table){
   try {
     const w = JSON.parse(localStorage.getItem(SYN_WKEY) || '{}');
@@ -810,36 +905,43 @@ function enableSynResize(table){
     th.appendChild(handle);
   });
 }
+
 function renderSynthese(d){
   lastSynData = d;
   if ($('#inp-month') && !$('#inp-month').value) $('#inp-month').value = d.month || '';
   if ($('#inp-pu') && document.activeElement !== $('#inp-pu')) $('#inp-pu').value = d.pu ?? 0;
 
+  // Nettoyage : filtres dont la colonne a été décochée entièrement ou valeurs inexistantes
   const all = synthAllRows(d);
-  const active = Object.entries(synColFilters).filter(([, v]) => String(v).trim() !== '');
-  let rows = all;
-  if (active.length){
-    rows = rows.filter(r => active.every(([c, f]) =>
-      String(r[c] ?? '').toLowerCase().includes(String(f).toLowerCase())));
-  }
-  const filtered = active.length > 0;
+  Object.keys(synColFilters).forEach(col => {
+    const uniq = new Set(all.map(r => cellVal(r, col)));
+    const f = synColFilters[col];
+    if (![...f].some(v => uniq.has(v))) delete synColFilters[col];
+  });
+
+  const filtered = synFiltersActive();
+  let rows = filtered ? all.filter(synRowPasses) : all;
   const totalRow = filtered ? synthTotalLocal(rows, 'TOTAL (sélection)')
                             : (d.rows || []).find(r => String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL'));
-  const body = rows.concat(totalRow ? [totalRow] : []);
-  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.fcol
-                  ? document.activeElement.dataset.fcol : null;
+  const body = buildSynBody(rows, totalRow);
 
-  let h = `<div class="count">${filtered ? rows.length + ' ligne(s) filtrée(s) sur ' + all.length : all.length + ' ligne(s)'}</div>`;
-  h += '<div class="tscroll"><table class="data syn" id="syn-table"><thead>';
-  h += '<tr class="hrow">' + SYN_COLS.map(c => `<th data-col="${esc(c)}">${esc(c)}</th>`).join('') + '</tr>';
-  h += '<tr class="frow">' + SYN_COLS.map(c =>
-        `<th><input type="text" data-fcol="${esc(c)}" placeholder="Filtrer…" value="${esc(synColFilters[c] || '')}"></th>`).join('') + '</tr>';
-  h += '</thead><tbody>';
+  let h = `<div class="count">${filtered ? rows.length + ' ligne(s) filtrée(s) sur ' + all.length + ' · ' : ''}${all.length} ligne(s)</div>`;
+  h += '<div class="tscroll"><table class="data syn" id="syn-table"><thead><tr>';
+  h += SYN_COLS.map(c => {
+    const active = !!synColFilters[c];
+    return `<th data-col="${esc(c)}"><span class="th-label">${esc(c)}</span>` +
+           `<button type="button" class="th-filter${active ? ' active' : ''}" data-fcol="${esc(c)}" title="Filtrer cette colonne">`; 
+    h += active ? '🔻' : '▾';
+    h += `</button></th>`;
+  }).join('');
+  h += '</tr></thead><tbody>';
   body.forEach(r => {
-    const isTotal = String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL');
-    h += `<tr class="${isTotal ? 'total' : ''}">`;
+    const dLbl = String(r['Date'] ?? '').toUpperCase();
+    const isTotal = dLbl.startsWith('TOTAL');
+    const isSub = dLbl.startsWith('SOUS-TOTAL');
+    h += `<tr class="${isTotal ? 'total' : (isSub ? 'subtotal' : '')}">`;
     SYN_COLS.forEach(c => {
-      if (!isTotal && SYN_EDITABLE[c] && ROLE === 'admin'){
+      if (!isTotal && !isSub && SYN_EDITABLE[c] && ROLE === 'admin'){
         h += `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(r.DateIso)}" data-champ="${SYN_EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
       } else if (c.includes('(%)')){
         h += `<td>${fmtPct(r[c])}</td>`;
@@ -852,23 +954,18 @@ function renderSynthese(d){
     h += '</tr>';
   });
   h += '</tbody></table></div>';
-  if (filtered) h += '<div class="toolbar"><button class="btn" id="syn-f-reset">✖ Réinitialiser les filtres</button></div>';
+  if (filtered) h += '<div class="toolbar"><button class="btn" id="syn-f-reset">✖ Effacer tous les filtres</button></div>';
   $('#out-p8').innerHTML = h;
 
   const table = $('#syn-table');
   applySynWidths(table);
   enableSynResize(table);
-  if (focused){
-    const inp = table.querySelector(`thead input[data-fcol="${CSS.escape(focused)}"]`);
-    if (inp){ inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
-  }
-  table.querySelectorAll('thead input[data-fcol]').forEach(inp =>
-    inp.addEventListener('input', debounce(() => {
-      const c = inp.dataset.fcol;
-      if (inp.value.trim() === '') delete synColFilters[c];
-      else synColFilters[c] = inp.value.trim();
-      renderSynthese(lastSynData);
-    }, 350)));
+  table.querySelectorAll('.th-filter').forEach(btn =>
+    btn.addEventListener('click', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      const th = btn.closest('th');
+      openSynPopover(btn.dataset.fcol, th);
+    }));
   const fr = $('#syn-f-reset');
   if (fr) fr.addEventListener('click', () => { synColFilters = {}; renderSynthese(lastSynData); });
 
@@ -891,7 +988,14 @@ async function genSynthese(showToast = true){
 }
 on('#btn-p8', 'click', () => genSynthese());
 on('#inp-month', 'change', () => { if (ROLE === 'admin') genSynthese(); });
-on('#inp-pu', 'change', debounce(() => { if (ROLE === 'admin') genSynthese(false); }, 500));
+on('#inp-pu', 'change', debounce(async () => {
+  if (ROLE !== 'admin') return;
+  try {
+    await api('/api/pu', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({pu: numVal('inp-pu')}), silent: true});
+  } catch(e){}
+  genSynthese(false);
+}, 500));
 on('#btn-exp-p8', 'click', async () => {
   try { await downloadPost('/api/export_synthese', 'synthese_mensuelle.xlsx', synthBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
@@ -917,6 +1021,8 @@ tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2p
 /* ---------- Démarrage ---------- */
 async function startApp(){
   await restoreIfEmpty();
+  try { const r = await api('/api/pu'); const el = $('#inp-pu');
+        if (el && document.activeElement !== el && Number(el.value || 0) === 0 && r.pu) el.value = r.pu; } catch(e){}
   try { await refreshState(); await loadP1(); await autoLoadAll(); } catch(e){}
 }
 (async function boot(){
