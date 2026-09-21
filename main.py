@@ -1024,6 +1024,20 @@ def api_export_conf():
     if r is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'confrontation.xlsx')
 
+@app.get('/api/pu')
+@login_required
+def api_get_pu():
+    return {'pu': _to_float(STATE.get('synth_pu'), 0)}
+
+@app.post('/api/pu')
+@admin_required
+def api_set_pu():
+    body = request.get_json(force=True, silent=True) or {}
+    if body.get('pu') is not None:
+        STATE['synth_pu'] = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
+        save_state()
+    return {'ok': True, 'pu': _to_float(STATE.get('synth_pu'), 0)}
+
 @app.get('/api/prefixes')
 @login_required
 def api_prefixes():
