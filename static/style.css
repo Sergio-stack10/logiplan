@@ -232,6 +232,6 @@ table.syn thead tr:first-child th{height:46px;padding-right:30px}
   #sidebar{width:100%}
 
 /* ===== Synthèse : lignes sous-total par semaine ===== */
-table.data tr.subtotal td{font-weight:700;background:rgba(37,226,204,.08)!important;
-  border-top:1px solid var(--teal);border-bottom:1px solid var(--teal)}
+table.data tr.subtotal td{font-weight:700;background:#e5f6e9!important;
+  border-top:1px solid #8fce9f;border-bottom:1px solid #8fce9f}
 }
