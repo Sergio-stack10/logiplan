@@ -222,12 +222,16 @@ table.syn thead tr:first-child th{height:46px;padding-right:30px}
 .viewer-locked{opacity:.55;pointer-events:none}
 
 /* ===== Signature ===== */
-.footer-fix{position:fixed;right:14px;bottom:8px;width:auto;color:#8aa9b8;
-  font-size:9px;padding:4px 6px;z-index:9998;border-radius:12px}
+.footer-fix{position:fixed;right:14px;bottom:8px;width:auto;background:#001a26;color:#ffffff;
+  font-size:10px;padding:5px 12px;z-index:9998;border-radius:16px;border:1px solid var(--teal)}
 .footer-fix span{color:var(--teal);font-weight:700;letter-spacing:1px}
 
 @media (max-width:900px){
   .metrics{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
   .layout{flex-direction:column}
   #sidebar{width:100%}
+
+/* ===== Synthèse : lignes sous-total par semaine ===== */
+table.data tr.subtotal td{font-weight:700;background:rgba(37,226,204,.08)!important;
+  border-top:1px solid var(--teal);border-bottom:1px solid var(--teal)}
 }
