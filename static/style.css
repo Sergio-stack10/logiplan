@@ -6,6 +6,11 @@
 *{box-sizing:border-box}
 html,body{margin:0;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:var(--txt);background:var(--bg)}
 
+/* ===== Navigation entre pages ===== */
+.panel{display:none}
+.panel.active{display:block;animation:fade .25s}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
 /* ===== Topbar ===== */
 .topbar{position:sticky;top:0;z-index:100;display:flex;align-items:center;gap:14px;
   background:linear-gradient(90deg,var(--navy-dark),var(--navy));padding:10px 18px;box-shadow:0 3px 12px rgba(0,20,32,.35);flex-wrap:wrap}
@@ -66,11 +71,6 @@ main{flex:1;padding:20px 26px 70px;min-width:0}
 .caption{font-size:12px;color:var(--muted);background:var(--teal-soft);border-radius:10px;padding:9px 13px}
 .hint{color:var(--muted);font-size:13px;background:#f6f9fb;border:1px dashed var(--line);border-radius:12px;padding:20px;text-align:center}
 .empty{color:var(--muted);font-size:13px;padding:14px;text-align:center;background:#f8fafb;border-radius:10px}
-
-/* ===== Navigation entre pages ===== */
-.panel{display:none}
-.panel.active{display:block;animation:fade .25s}
-@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 
 /* ===== Tables générales ===== */
 .tscroll{overflow:auto;max-height:66vh;border:1px solid var(--line);border-radius:12px}
@@ -196,6 +196,16 @@ table.syn thead tr:first-child th{height:46px;padding-right:30px}
 .sp-foot{border-top:1px solid var(--line);margin-top:6px;padding-top:8px;text-align:right}
 .sp-foot .btn{padding:6px 14px;font-size:12px;width:auto}
 
+/* ===== Synthèse : sous-totaux par semaine (jaune ambré) ===== */
+table.data > tbody > tr.subtotal > td,
+table.syn tbody tr.subtotal td,
+table.data tr.subtotal td{
+  font-weight:700 !important;
+  background:#fdf3d7 !important;
+  border-top:1px solid #e8c66a !important;
+  border-bottom:1px solid #e8c66a !important;
+}
+
 /* ===== Messages & toasts ===== */
 .msg{padding:10px 14px;border-radius:10px;margin:10px 0;font-size:13px}
 .msg.err{background:var(--err-bg);color:#a11}.msg.ok{background:#d9f7f2;color:#066}
@@ -221,18 +231,13 @@ table.syn thead tr:first-child th{height:46px;padding-right:30px}
 /* ===== Session Viewer : éléments grisés ===== */
 .viewer-locked{opacity:.55;pointer-events:none}
 
-/* ===== Sous-total semaine : jaune ambré visible ===== */
-table.data > tbody > tr.subtotal > td,
-table.syn tbody tr.subtotal td,
-table.data tr.subtotal td{
-  font-weight:700 !important;
-  background:#fdf3d7 !important;
-  border-top:1px solid #e8c66a !important;
-  border-bottom:1px solid #e8c66a !important;
-}
-
 /* ===== Signature discrète en bas à droite ===== */
 .footer-fix{position:fixed;right:14px;bottom:8px;width:auto;background:transparent;color:#8aa9b8;
   font-size:9px;padding:4px 6px;z-index:9998;border:none;box-shadow:none;border-radius:0}
 .footer-fix span{color:var(--teal);font-weight:700;letter-spacing:1px}
+
+@media (max-width:900px){
+  .metrics{grid-template-columns:repeat(auto-fill,minmax(100px,1fr))}
+  .layout{flex-direction:column}
+  #sidebar{width:100%}
 }
