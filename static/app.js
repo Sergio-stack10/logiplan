@@ -178,8 +178,7 @@ function searchRows(rows, text){
 
 /* ================= RÔLE ================= */
 const ADMIN_CONTROL_IDS = ['btn-import','inp-planning','inp-commande','inp-reference',
-  'inp-week','inp-taux','btn-del-week','btn-p2','btn-p3','btn-p4','btn-p5',
-  'btn-p7','btn-p6','btn-p8','btn-exp-p2'];
+  'inp-week','inp-taux','btn-del-week','btn-exp-p2'];
 function applyRoleUI(){
   const viewer = (ROLE === 'viewer');
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', viewer));
