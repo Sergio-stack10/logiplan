@@ -883,8 +883,9 @@ def api_delete_week():
 def api_result(key):
     week = STATE.get('current_week')
     r = get_result(week, key)
-    if r is None: return jsonify({'error': 'Aucun résultat stocké'}), 404
-    return r
+    if r is None:
+        return jsonify(None)   # 200 + null : aucun résultat stocké pour cette clé
+    return jsonify(r)
 
 @app.get('/api/page1')
 @login_required
