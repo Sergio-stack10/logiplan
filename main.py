@@ -128,37 +128,74 @@ def load_state():
 
 STATE = load_state()
 
+# ---------- Sérialisation Mongo au format JSON (insensible aux versions pandas) ----------
+def state_to_doc():
+    def dfd(d):
+        return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
+    plannings = {w: dfd(df) for w, df in STATE['plannings'].items()}
+    commandes = {w: dfd(df) for w, df in STATE['commandes'].items() if isinstance(df, pd.DataFrame)}
+    ref = dfd(STATE.get('reference')) if isinstance(STATE.get('reference'), pd.DataFrame) else None
+    calculs = {}
+    for w, c in STATE['calculs'].items():
+        if isinstance(c, dict):
+            out = {k: c[k] for k in ('presta', 'theorique', 'taux') if isinstance(c.get(k), dict)}
+            if isinstance(c.get('results'), dict): out['results'] = c['results']
+            calculs[w] = out
+    return {'plannings': plannings, 'commandes': commandes, 'reference': ref,
+            'calculs': calculs, 'current_week': STATE.get('current_week'),
+            'synth_pu': STATE.get('synth_pu', 0),
+            'synth_edits': STATE.get('synth_edits', {}),
+            'menu_edits': STATE.get('menu_edits', {})}
+
+def apply_doc_to_state(doc):
+    plannings = {}
+    for w, d in (doc.get('plannings') or {}).items():
+        df = df_from_payload(d)
+        if df is None: continue
+        for j in JOURS:
+            if f'{j}_Flag' in df.columns:
+                df[f'{j}_Flag'] = pd.to_numeric(df[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
+        if planning_valide(df): plannings[w] = df
+    commandes = {}
+    for w, d in (doc.get('commandes') or {}).items():
+        df = df_from_payload(d)
+        if df is None or 'Paid ID' not in df.columns: continue
+        df['Paid ID'] = df['Paid ID'].apply(clean_id)
+        df = df[df['Paid ID'] != '']
+        if not df.empty: commandes[w] = df
+    ref = df_from_payload(doc.get('reference'))
+    if ref is not None and not {'WORKDAY ID', 'REF_PAID_ID'}.issubset(ref.columns):
+        ref = None
+    calculs = {}
+    for w, c in (doc.get('calculs') or {}).items():
+        if isinstance(c, dict):
+            calculs[w] = {k: v for k, v in c.items()
+                          if k in ('presta', 'theorique', 'taux', 'results') and isinstance(v, dict)}
+    STATE['plannings'] = plannings
+    STATE['commandes'] = commandes
+    STATE['reference'] = ref
+    STATE['calculs'] = calculs
+    if isinstance(doc.get('synth_edits'), dict): STATE['synth_edits'] = doc['synth_edits']
+    if isinstance(doc.get('menu_edits'), dict): STATE['menu_edits'] = doc['menu_edits']
+    STATE['synth_pu'] = _to_float(doc.get('synth_pu'), 0)
+    cw = doc.get('current_week')
+    STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
+
 if not STATE['plannings'] and mongo_col is not None:
     try:
         doc = mongo_col.find_one({'_id': 'state'})
-        if doc and 'blob' in doc:
-            restored = pickle.loads(gzip.decompress(doc['blob']))
-            if isinstance(restored, dict) and isinstance(restored.get('plannings'), dict):
-                STATE = restored
-                if not isinstance(STATE.get('menu_edits'), dict): STATE['menu_edits'] = {}
-                try:
-                    with open(DATA_FILE, 'wb') as f:
-                        pickle.dump(STATE, f)
-                except Exception:
-                    pass
-                app.logger.info("État restauré depuis MongoDB")
+        if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
+            apply_doc_to_state(doc)
+            try:
+                with open(DATA_FILE, 'wb') as f:
+                    pickle.dump(STATE, f)
+            except Exception:
+                pass
+            app.logger.info("État restauré depuis MongoDB (JSON)")
+        else:
+            app.logger.warning("MongoDB : document vide ou absent, rien à restaurer")
     except Exception as e:
         app.logger.warning(f"Restauration MongoDB impossible : {e}")
-
-def save_state():
-    try:
-        with open(DATA_FILE, 'wb') as f:
-            pickle.dump(STATE, f)
-    except Exception:
-        pass
-    if mongo_col is not None and Binary is not None:
-        try:
-            blob = Binary(gzip.compress(pickle.dumps(STATE)))
-            mongo_col.update_one({'_id': 'state'},
-                                 {'$set': {'blob': blob, 'updated': datetime.datetime.utcnow()}},
-                                 upsert=True)
-        except Exception:
-            pass
 
 def planning_valide(df):
     return (isinstance(df, pd.DataFrame) and not df.empty
