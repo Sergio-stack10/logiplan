@@ -710,15 +710,18 @@ def api_me():
 @app.post('/api/login')
 def api_login():
     d = request.get_json(force=True, silent=True) or {}
-    user = str(d.get('username') or '').strip()
-    pwd = str(d.get('password') or '')
-    if user.lower() == ADMIN_USER.lower() and pwd == ADMIN_PASSWORD:
-        flask_session['role'] = 'admin'; flask_session.permanent = True
-        return {'ok': True, 'role': 'admin'}
-    if user.lower() == VIEWER_USER.lower() and pwd == VIEWER_PASSWORD:
+    role = str(d.get('role') or '').strip().lower()
+    if role == 'admin':
+        pwd = str(d.get('password') or '')
+        if pwd == ADMIN_PASSWORD:
+            flask_session['role'] = 'admin'; flask_session.permanent = True
+            return {'ok': True, 'role': 'admin'}
+        return jsonify({'error': "Mot de passe administrateur incorrect"}), 401
+    if role == 'viewer':
+        # Connexion Utilisateur : accès direct, sans mot de passe
         flask_session['role'] = 'viewer'; flask_session.permanent = True
         return {'ok': True, 'role': 'viewer'}
-    return jsonify({'error': "Nom d'utilisateur ou mot de passe incorrect"}), 401
+    return jsonify({'error': "Profil inconnu"}), 400
 
 @app.post('/api/logout')
 def api_logout():
