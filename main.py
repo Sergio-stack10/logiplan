@@ -24,11 +24,7 @@ def _load_secret():
 app.secret_key = _load_secret()
 app.permanent_session_lifetime = datetime.timedelta(days=30)
 
-ADMIN_USER = os.environ.get('ADMIN_USER', 'Admin')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Utilities26')
-VIEWER_USER = os.environ.get('VIEWER_USER', 'cnx')
-VIEWER_PASSWORD = os.environ.get('VIEWER_PASSWORD', 'Cantine2026')
-USING_DEFAULTS = (os.environ.get('ADMIN_PASSWORD') is None or os.environ.get('VIEWER_PASSWORD') is None)
 
 def current_role():
     return flask_session.get('role')
@@ -47,7 +43,7 @@ def login_required(fn):
 def admin_required(fn):
     @wraps(fn)
     def wrapper(*a, **kw):
-        if current_role() != 'admin':
+        if not is_admin():
             return jsonify({'error': "Action réservée à l'administrateur"}), 403
         return fn(*a, **kw)
     return wrapper
@@ -202,7 +198,7 @@ def get_menu_edits(week):
     return out
 
 def store_result(week, key, payload):
-    if week:
+    if week and is_admin():
         STATE['calculs'].setdefault(week, {})['results'] = STATE['calculs'].get(week, {}).get('results', {})
         STATE['calculs'][week]['results'][key] = payload
         save_state()
@@ -561,7 +557,6 @@ def parse_reference(src_bytes):
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
 def _apply_filters(pl):
-    """Filtres serveur, multi-valeurs acceptées (transport=A&transport=B...)."""
     out = pl.copy()
     for col, key in (('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')):
         vals = [str(v).strip() for v in request.args.getlist(key) if str(v).strip()]
@@ -705,7 +700,7 @@ def handle_exception(e):
 # ================= ROUTES AUTH =================
 @app.get('/api/me')
 def api_me():
-    return {'role': current_role(), 'using_defaults': USING_DEFAULTS}
+    return {'role': current_role()}
 
 @app.post('/api/login')
 def api_login():
@@ -718,7 +713,6 @@ def api_login():
             return {'ok': True, 'role': 'admin'}
         return jsonify({'error': "Mot de passe administrateur incorrect"}), 401
     if role == 'viewer':
-        # Connexion Utilisateur : accès direct, sans mot de passe
         flask_session['role'] = 'viewer'; flask_session.permanent = True
         return {'ok': True, 'role': 'viewer'}
     return jsonify({'error': "Profil inconnu"}), 400
@@ -774,8 +768,10 @@ def api_backup_export():
             'menu_edits': STATE.get('menu_edits', {})}
 
 @app.post('/api/backup_import')
-@admin_required
+@login_required
 def api_backup_import():
+    if STATE['plannings'] and not is_admin():
+        return jsonify({'error': "Des données existent déjà : restauration réservée à l'administrateur"}), 403
     try:
         b = request.get_json(force=True, silent=True) or {}
         plannings = {}
@@ -884,7 +880,7 @@ def api_result(key):
     week = STATE.get('current_week')
     r = get_result(week, key)
     if r is None:
-        return jsonify(None)   # 200 + null : aucun résultat stocké pour cette clé
+        return jsonify(None)
     return jsonify(r)
 
 @app.get('/api/page1')
@@ -942,7 +938,6 @@ def api_page2():
         store_result(week, 'p2', {'rows': p['rows'], 'metrics': p['metrics'], 'presta': p['presta']})
         save_state()
         return p
-    # Utilisateur : consultation avec les références stockées par l'Admin
     taux_by_day = get_week_taux(week)
     taux = sum(taux_by_day.values()) / 7.0
     _, presta_map = get_effectifs_refs(week)
@@ -1049,20 +1044,6 @@ def api_export_conf():
     if r is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'confrontation.xlsx')
 
-@app.get('/api/pu')
-@login_required
-def api_get_pu():
-    return {'pu': _to_float(STATE.get('synth_pu'), 0)}
-
-@app.post('/api/pu')
-@admin_required
-def api_set_pu():
-    body = request.get_json(force=True, silent=True) or {}
-    if body.get('pu') is not None:
-        STATE['synth_pu'] = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
-        save_state()
-    return {'ok': True, 'pu': _to_float(STATE.get('synth_pu'), 0)}
-
 @app.get('/api/prefixes')
 @login_required
 def api_prefixes():
@@ -1102,13 +1083,12 @@ def _recap_compute(body):
         raw_taux = body.get('taux') or {}
         taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
     else:
-        # Utilisateur : consultation avec les taux stockés par l'Admin
         taux_by_day = get_week_taux(week)
     theo, presta = get_effectifs_refs(week)
     recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta, get_menu_edits(week))
     warnings = []
     if theo is None:
-        warnings.append("Total Théorique introuvable : l'administrateur doit calculer la page Effectifs. Planifié PROD = recalcul planning.")
+        warnings.append("Total Théorique introuvable : l'administrateur doit calculer la page Effectifs.")
     if presta is None:
         warnings.append("Prestataires (Hors Planning) non renseignés par l'administrateur : Planifié HORS PROD = 0.")
     return week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day
