@@ -177,8 +177,17 @@ function searchRows(rows, text){
 }
 
 /* ================= RÔLE ================= */
-const ADMIN_CONTROL_IDS = ['btn-import','inp-planning','inp-commande','inp-reference',
-  'inp-week','inp-taux','btn-del-week','btn-exp-p2'];
+/* Déclencheurs de calcul/génération/suppression : réservés à l'Admin.
+   Les boutons d'export (btn-exp-*, btn-pdf-*) restent accessibles à tous. */
+const ADMIN_CONTROL_IDS = [
+  // Import & réglages
+  'btn-import','inp-planning','inp-commande','inp-reference','inp-week','inp-taux',
+  'btn-del-week',
+  // Déclencheurs de calcul / génération
+  'btn-p2','btn-p3','btn-p4','btn-p5','btn-p6','btn-p7','btn-p8','btn-exp-p2',
+  // Vérification matricules (recalcul serveur)
+  'btn-matr'
+];
 function applyRoleUI(){
   const viewer = (ROLE === 'viewer');
   document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('viewer-hidden', viewer));
@@ -187,15 +196,12 @@ function applyRoleUI(){
     if (!el) return;
     el.disabled = viewer;
     el.classList.toggle('viewer-locked', viewer);
+    el.title = viewer ? "Action réservée à l'administrateur" : '';
   });
   const b = $('#role-badge');
-  if (b) b.innerHTML = viewer ? '👁️ Visualiseur' : '🛡️ Admin';
+  if (b) b.innerHTML = viewer ? '👁️ Utilisateur' : '🛡️ Admin';
   ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
-on('#btn-logout', 'click', async () => {
-  try { await api('/api/logout', {method:'POST'}); } catch(e){}
-  window.location.href = '/';
-});
 
 /* ---------- IndexedDB ---------- */
 function idbOpen(){ return new Promise((res, rej) => {
@@ -272,10 +278,21 @@ on('#btn-del-week', 'click', async () => {
 });
 
 async function refreshState(){
-  const s = await api('/api/state');
-  $('#sel-week').innerHTML = s.weeks.map(w => `<option${w===s.current_week?' selected':''}>${esc(w)}</option>`).join('') || '<option value="">—</option>';
-  $('#sel-week').disabled = !s.weeks.length;
-  $('#week-badge').textContent = s.current_week ? 'Semaine ' + s.current_week : 'Aucune semaine';
+  try {
+    const s = await api('/api/state');
+    $('#sel-week').innerHTML = s.weeks.map(w => `<option${w===s.current_week?' selected':''}>${esc(w)}</option>`).join('') || '<option value="">—</option>';
+    $('#sel-week').disabled = !s.weeks.length;
+    $('#week-badge').textContent = s.current_week ? 'Semaine ' + s.current_week : 'Aucune semaine';
+    if (!s.weeks.length){
+      toast("⚠️ Aucune semaine sur le serveur : l'administrateur doit importer les fichiers (ou la restauration s'exécutera au démarrage).", 'warn');
+    }
+  } catch(e){
+    console.error('[LogiPlan] refreshState :', e.message);
+    $('#sel-week').innerHTML = '<option value="">—</option>';
+    $('#sel-week').disabled = true;
+    $('#week-badge').textContent = 'Non connecté';
+    toast('❌ ' + esc(e.message) + ' — reconnectez-vous.', 'err');
+  }
 }
 
 /* ---------- Onglets ---------- */
@@ -626,6 +643,7 @@ function renderRecap(d){
   }, 500)));
 }
 async function calcP6(){
+  if (ROLE === 'viewer'){ toast("Action réservée à l'administrateur", 'warn'); return; }
   busy($('#btn-p6'), true, 'Calcul…');
   try {
     renderRecap(await api('/api/recap', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(recapBody())}));
@@ -996,6 +1014,7 @@ function renderSynthese(d){
   }));
 }
 async function genSynthese(showToast = true){
+  if (ROLE === 'viewer'){ toast("Action réservée à l'administrateur", 'warn'); return; }
   busy($('#btn-p8'), true, 'Calcul…');
   try {
     renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -1074,10 +1093,16 @@ async function startApp(){
   MULTI_IDS.forEach(initMultiSelect);
   try {
     const me = await api('/api/me');
-    if (!me.role){ window.location.href = '/'; return; }
+    console.log('[LogiPlan] Session :', me);
+    if (!me.role){
+      console.warn('[LogiPlan] Pas de session valide → retour à la connexion');
+      window.location.href = '/';
+      return;
+    }
     ROLE = me.role; applyRoleUI();
-    if (me.using_defaults && me.role === 'admin')
-      setTimeout(() => toast('⚠️ Identifiants par défaut actifs — définissez ADMIN_USER / ADMIN_PASSWORD / VIEWER_USER / VIEWER_PASSWORD dans Render → Environment', 'warn'), 1800);
     await startApp();
-  } catch(e){ window.location.href = '/'; }
+  } catch(e){
+    console.error('[LogiPlan] Boot échoué :', e);
+    window.location.href = '/';
+  }
 })();
