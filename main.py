@@ -923,22 +923,34 @@ def _save_p2_refs(week, pivot, prest):
     calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
 
 @app.get('/api/page2')
-@admin_required
+@login_required
 def api_page2():
     week, pl, _ = current_data()
     if pl is None: return {'rows': [], 'metrics': {}, 'presta': {}}
     pl = _apply_filters(pl)
     if pl.empty: return {'rows': [], 'metrics': {j: 0 for j in JOURS}, 'presta': {j: 0 for j in JOURS}}
-    taux = _to_float(request.args.get('taux'), 0)
-    prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
+    if is_admin():
+        taux = _to_float(request.args.get('taux'), 0)
+        prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
+        pivot = build_pivot(pl, taux, prest)
+        _save_p2_refs(week, pivot, prest)
+        p = df_payload(pivot)
+        tot = pivot[pivot['Projet'] == 'Total à commander']
+        p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
+        p['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
+        store_result(week, 'p2', {'rows': p['rows'], 'metrics': p['metrics'], 'presta': p['presta']})
+        save_state()
+        return p
+    # Utilisateur : consultation avec les références stockées par l'Admin
+    taux_by_day = get_week_taux(week)
+    taux = sum(taux_by_day.values()) / 7.0
+    _, presta_map = get_effectifs_refs(week)
+    prest = [_to_int((presta_map or {}).get(j, 0)) for j in JOURS]
     pivot = build_pivot(pl, taux, prest)
-    _save_p2_refs(week, pivot, prest)
     p = df_payload(pivot)
     tot = pivot[pivot['Projet'] == 'Total à commander']
     p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
     p['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
-    store_result(week, 'p2', {'rows': p['rows'], 'metrics': p['metrics'], 'presta': p['presta']})
-    save_state()
     return p
 
 @app.get('/api/export_page2')
@@ -947,24 +959,31 @@ def api_export_page2():
     week, pl, _ = current_data()
     if pl is None: return jsonify({'error': 'Aucun planning'}), 400
     pl = _apply_filters(pl)
-    taux = _to_float(request.args.get('taux'), 0)
-    prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
-    pivot = build_pivot(pl, taux, prest)
     if is_admin():
+        taux = _to_float(request.args.get('taux'), 0)
+        prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
+        pivot = build_pivot(pl, taux, prest)
         _save_p2_refs(week, pivot, prest)
         save_state()
+    else:
+        taux_by_day = get_week_taux(week)
+        taux = sum(taux_by_day.values()) / 7.0
+        _, presta_map = get_effectifs_refs(week)
+        prest = [_to_int((presta_map or {}).get(j, 0)) for j in JOURS]
+        pivot = build_pivot(pl, taux, prest)
     return dl(excel_bytes(pivot), 'effectifs.xlsx')
 
 @app.get('/api/page3')
-@admin_required
+@login_required
 def api_page3():
-    _, pl, _ = current_data()
+    week, pl, _ = current_data()
     empty = {'pivot': {'columns': [], 'rows': []}, 'detail': {'columns': [], 'rows': []}}
     if pl is None: return empty
     pivot, detail = build_shifts(_apply_filters(pl))
     if pivot is None: return empty
     p = {'pivot': df_payload(pivot), 'detail': df_payload(detail)}
-    store_result(STATE.get('current_week'), 'p3', p)
+    if is_admin():
+        store_result(week, 'p3', p)
     return p
 
 @app.get('/api/export_page3')
@@ -982,13 +1001,14 @@ def api_export_page3():
     return dl(buf, 'shifts.xlsx')
 
 @app.get('/api/page4')
-@admin_required
+@login_required
 def api_page4():
-    _, pl, _ = current_data()
+    week, pl, _ = current_data()
     if pl is None: return {'peaks': {'columns': [], 'rows': []}, 'slots': {'columns': [], 'rows': []}}
     slots, peaks = build_slots_peaks(_apply_filters(pl))
     p = {'peaks': df_payload(peaks), 'slots': df_payload(slots)}
-    store_result(STATE.get('current_week'), 'p4', p)
+    if is_admin():
+        store_result(week, 'p4', p)
     return p
 
 @app.get('/api/export_page4')
@@ -1005,7 +1025,7 @@ def api_export_page4():
     return dl(buf, 'creneaux_pics.xlsx')
 
 @app.post('/api/page5')
-@admin_required
+@login_required
 def api_page5():
     try:
         week, pl, cmd = current_data()
@@ -1013,7 +1033,8 @@ def api_page5():
         if cmd is None: return jsonify({'error': "Importez le fichier Commandes dans la barre latérale."}), 400
         conf = build_conf(pl, cmd)
         p = df_payload(conf)
-        store_result(week, 'conf', p)
+        if is_admin():
+            store_result(week, 'conf', p)
         return p
     except Exception as e:
         app.logger.exception("api_page5")
@@ -1076,27 +1097,32 @@ def api_menu_edit():
 
 def _recap_compute(body):
     week, pl, cmd = current_data()
-    raw_taux = body.get('taux') or {}
-    taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
+    if is_admin():
+        raw_taux = body.get('taux') or {}
+        taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
+    else:
+        # Utilisateur : consultation avec les taux stockés par l'Admin
+        taux_by_day = get_week_taux(week)
     theo, presta = get_effectifs_refs(week)
     recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta, get_menu_edits(week))
     warnings = []
     if theo is None:
-        warnings.append("Total Théorique introuvable : calculez la page Effectifs. Planifié PROD = recalcul planning.")
+        warnings.append("Total Théorique introuvable : l'administrateur doit calculer la page Effectifs. Planifié PROD = recalcul planning.")
     if presta is None:
-        warnings.append("Prestataires (Hors Planning) non renseignés : Planifié HORS PROD = 0.")
+        warnings.append("Prestataires (Hors Planning) non renseignés par l'administrateur : Planifié HORS PROD = 0.")
     return week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day
 
 @app.post('/api/recap')
-@admin_required
+@login_required
 def api_recap():
     try:
         body = request.get_json(force=True, silent=True) or {}
         week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day = _recap_compute(body)
         if cmd is None:
-            return jsonify({'error': "Aucune commande disponible : importez le fichier Commandes dans la barre latérale."}), 400
-        STATE['calculs'].setdefault(week, {})['taux'] = taux_by_day
-        save_state()
+            return jsonify({'error': "Aucune commande disponible : l'administrateur doit importer le fichier Commandes."}), 400
+        if is_admin():
+            STATE['calculs'].setdefault(week, {})['taux'] = taux_by_day
+            save_state()
         dates = derive_week_dates(week)
         mois_fr = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
                    "septembre", "octobre", "novembre", "décembre"]
@@ -1132,7 +1158,8 @@ def api_recap():
         payload = {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
                    'has_planning': pl is not None, 'has_theo': theo is not None,
                    'has_presta': presta is not None, 'warnings': warnings}
-        store_result(week, 'recap', payload)
+        if is_admin():
+            store_result(week, 'recap', payload)
         return payload
     except Exception as e:
         app.logger.exception("api_recap")
@@ -1154,13 +1181,14 @@ def api_export_recap():
         return jsonify({'error': f"Erreur d'export : {e}"}), 400
 
 @app.post('/api/page7')
-@admin_required
+@login_required
 def api_page7():
     wk = STATE.get('current_week')
     conf = get_result(wk, 'conf')
     if conf is None: return jsonify({'error': "Générez d'abord la confrontation (onglet 5)."}), 400
     p = df_payload(build_anomalies(pd.DataFrame(conf['rows'])))
-    store_result(wk, 'constat', p)
+    if is_admin():
+        store_result(wk, 'constat', p)
     return p
 
 @app.post('/api/export_anom')
@@ -1247,14 +1275,15 @@ def _synth_compute(body):
     return {'week': week, 'month': month, 'pu': pu, 'rows': rows + [total]}
 
 @app.post('/api/synthese')
-@admin_required
+@login_required
 def api_synthese():
     try:
         body = request.get_json(force=True, silent=True) or {}
         if not STATE['plannings']:
-            return jsonify({'error': "Chargez d'abord au moins une semaine."}), 400
+            return jsonify({'error': "Aucune semaine chargée."}), 400
         p = _synth_compute(body)
-        store_result(STATE.get('current_week'), 'synthese', p)
+        if is_admin():
+            store_result(STATE.get('current_week'), 'synthese', p)
         return p
     except Exception as e:
         app.logger.exception("api_synthese")
