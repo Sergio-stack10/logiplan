@@ -105,10 +105,30 @@ function msFill(id, values){
   const c = MS.comps[id];
   if (!c) return;
   const prev = msValues(id);
-  c.panel.innerHTML = (values||[]).map(v =>
-    `<label class="ms-opt"><input type="checkbox" value="${esc(v)}"${prev.includes(v)?' checked':''}> ${esc(v)}</label>`).join('')
-    || '<div class="ms-empty">—</div>';
-  c.panel.querySelectorAll('input').forEach(cb => cb.addEventListener('change', () => msUpdateBtn(id)));
+  const vals = values || [];
+  c.panel.innerHTML =
+    `<label class="ms-opt ms-all"><input type="checkbox" class="ms-toggle-all"> <b>Tout sélectionner / Tout désélectionner</b></label>` +
+    `<div class="ms-sep"></div>` +
+    (vals.map(v =>
+      `<label class="ms-opt"><input type="checkbox" value="${esc(v)}"${prev.includes(v)?' checked':''}> ${esc(v)}</label>`).join('')
+    || '<div class="ms-empty">—</div>');
+  // Cohérence de la case globale à l'ouverture
+  const all = c.panel.querySelector('.ms-toggle-all');
+  if (all) all.checked = vals.length > 0 && prev.length === vals.length;
+  // Case globale : tout cocher / tout décocher
+  if (all) all.addEventListener('change', () => {
+    c.panel.querySelectorAll('.ms-opt:not(.ms-all) input').forEach(cb => cb.checked = all.checked);
+    msUpdateBtn(id);
+  });
+  // Cohérence : si toutes cochées → globale cochée ; sinon décochée
+  c.panel.querySelectorAll('.ms-opt:not(.ms-all) input').forEach(cb =>
+    cb.addEventListener('change', () => {
+      if (all){
+        const boxes = c.panel.querySelectorAll('.ms-opt:not(.ms-all) input');
+        all.checked = boxes.length > 0 && Array.from(boxes).every(b => b.checked);
+      }
+      msUpdateBtn(id);
+    }));
   msUpdateBtn(id);
 }
 function msUpdateBtn(id){
