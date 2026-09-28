@@ -969,12 +969,12 @@ function renderSynthese(d){
   const fr = $('#syn-f-reset');
   if (fr) fr.addEventListener('click', () => { synColFilters = {}; renderSynthese(lastSynData); });
 
-  $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', debounce(() => {
+  $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', () => {
     const diso = inp.dataset.date, champ = inp.dataset.champ;
     synEdits[diso] = synEdits[diso] || {};
     synEdits[diso][champ] = parseInt(inp.value) || 0;
-    genSynthese(false);
-  }, 400)));
+    updatePendingCount();
+  }));
 }
 async function genSynthese(showToast = true){
   busy($('#btn-p8'), true, 'Calcul…');
@@ -987,7 +987,6 @@ async function genSynthese(showToast = true){
   busy($('#btn-p8'), false);
 }
 on('#btn-p8', 'click', () => genSynthese());
-on('#inp-month', 'change', () => { if (ROLE === 'admin') genSynthese(); });
 on('#inp-pu', 'change', debounce(async () => {
   if (ROLE !== 'admin') return;
   try {
@@ -1017,6 +1016,33 @@ tbody tr:nth-child(odd) td{background:#f8fbfd}
 tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2px solid #003D5B}
 @page{size:A4 landscape;margin:10mm}</style></head><body>${h}</body></html>`);
 });
+
+/* Compteur de saisies non calculées, affiché sur le bouton */
+function updatePendingCount(){
+  const btn = $('#btn-p8');
+  if (!btn || ROLE !== 'admin') return;
+  const nCells = Object.values(synEdits).reduce((s, o) => s + Object.keys(o).length, 0);
+  const puDirty = numVal('inp-pu') !== (lastSynData ? lastSynData.pu : 0);
+  const n = nCells + (puDirty ? 1 : 0);
+  if (n > 0 && !btn.dataset.lbl){
+    btn.dataset.lbl = btn.innerHTML;
+    btn.innerHTML = `🧾 Calculer (${n} modif${n > 1 ? 's' : ''})`;
+    btn.classList.add('pending');
+  } else if (n > 0){
+    btn.innerHTML = `🧾 Calculer (${n} modif${n > 1 ? 's' : ''})`;
+  } else if (btn.dataset.lbl){
+    btn.innerHTML = btn.dataset.lbl;
+    delete btn.dataset.lbl;
+    btn.classList.remove('pending');
+  }
+}
+/* Réapplique les saisies locales sur le rendu après un calcul (sécurité anti-perdition) */
+function reapplyLocalEdits(){
+  $$('#out-p8 .editcell input').forEach(inp => {
+    const e = (synEdits[inp.dataset.date] || {})[inp.dataset.champ];
+    if (e !== undefined) inp.value = e;
+  });
+}
 
 /* ---------- Démarrage ---------- */
 async function startApp(){
