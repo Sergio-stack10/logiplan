@@ -12,27 +12,36 @@ body{min-height:100vh;display:flex;align-items:center;justify-content:center;
   font-family:'Segoe UI',Roboto,Arial,sans-serif;padding:20px;overflow:auto}
 .card{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
   backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
-  border-radius:24px;padding:42px 38px;width:min(420px,94vw);
+  border-radius:24px;padding:42px 38px;width:min(460px,94vw);
   box-shadow:0 24px 70px rgba(0,0,0,.5);text-align:center}
 .ico{width:92px;height:92px;margin:0 auto 20px;background:#25E2CC;border-radius:26px;
   display:flex;align-items:center;justify-content:center;font-size:42px;
   box-shadow:0 10px 30px rgba(37,226,204,.35)}
 h1{color:#fff;font-size:30px;margin-bottom:6px}
-.sub{color:rgba(255,255,255,.75);font-size:14px;margin-bottom:22px}
+.sub{color:rgba(255,255,255,.75);font-size:14px;margin-bottom:20px}
+.role-pick{display:flex;gap:12px;margin-bottom:16px}
+.role-btn{flex:1;background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.2);
+  border-radius:16px;padding:16px 10px;cursor:pointer;color:#fff;display:flex;flex-direction:column;
+  align-items:center;gap:5px;transition:.2s;font-family:inherit}
+.role-btn span{font-size:26px}
+.role-btn b{font-size:14px}
+.role-btn small{font-size:10.5px;color:rgba(255,255,255,.65);line-height:1.3}
+.role-btn:hover{border-color:#25E2CC}
+.role-btn.selected{border-color:#25E2CC;background:rgba(37,226,204,.16);box-shadow:0 6px 20px rgba(37,226,204,.25)}
+.hidden{display:none}
 label{display:block;text-align:left;color:#fff;font-weight:700;font-size:13px;margin:12px 0 6px}
-input{width:100%;padding:12px 14px;border:none;border-radius:10px;font-size:14px;
-  background:#fff;color:#223}
+input{width:100%;padding:12px 14px;border:none;border-radius:10px;font-size:14px;background:#fff;color:#223}
 input:focus{outline:3px solid rgba(37,226,204,.6)}
 .pwd-wrap{position:relative}
 .pwd-wrap input{padding-right:48px}
 .eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:34px;height:34px;
   background:transparent;border:none;cursor:pointer;font-size:17px;opacity:.55;line-height:1;padding:0}
 .eye:hover{opacity:1}
-button.login-btn{width:100%;margin-top:22px;background:#25E2CC;color:#002032;font-size:15px;
+button.login-btn{width:100%;margin-top:20px;background:#25E2CC;color:#002032;font-size:15px;
   padding:13px;border:none;border-radius:12px;font-weight:800;cursor:pointer;transition:.2s}
 button.login-btn:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-2px);
   box-shadow:0 10px 22px rgba(37,226,204,.4)}
-button.login-btn:disabled{opacity:.6;cursor:wait;transform:none;box-shadow:none}
+button.login-btn:disabled{opacity:.6;cursor:wait}
 .msg{background:#ffe3e3;color:#a11;padding:9px 12px;border-radius:9px;font-size:12.5px;
   margin-top:12px;text-align:left}
 </style>
@@ -42,12 +51,20 @@ button.login-btn:disabled{opacity:.6;cursor:wait;transform:none;box-shadow:none}
     <div class="ico">👤</div>
     <h1>LogiPlan</h1>
     <p class="sub">Veuillez vous connecter pour accéder à l'application.</p>
-    <label for="u">Nom d'utilisateur</label>
-    <input id="u" autocomplete="username" autofocus>
-    <label for="p">Mot de passe</label>
-    <div class="pwd-wrap">
-      <input id="p" type="password" autocomplete="current-password">
-      <button type="button" class="eye" id="eye" title="Afficher / masquer le mot de passe">👁️</button>
+    <div class="role-pick">
+      <button type="button" class="role-btn selected" data-role="viewer">
+        <span>👥</span><b>Utilisateur</b><small>Consultation &amp; extraction</small>
+      </button>
+      <button type="button" class="role-btn" data-role="admin">
+        <span>🛡️</span><b>Admin</b><small>Gestion complète</small>
+      </button>
+    </div>
+    <div id="pwd-zone" class="hidden">
+      <label for="p">Mot de passe administrateur</label>
+      <div class="pwd-wrap">
+        <input id="p" type="password" autocomplete="current-password">
+        <button type="button" class="eye" id="eye" title="Afficher / masquer le mot de passe">👁️</button>
+      </div>
     </div>
     <button class="login-btn" id="btn">Se connecter</button>
     <div id="err"></div>
@@ -55,6 +72,17 @@ button.login-btn:disabled{opacity:.6;cursor:wait;transform:none;box-shadow:none}
 <script>
 const $ = s => document.querySelector(s);
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let role = 'viewer';   // Utilisateur sélectionné par défaut
+
+document.querySelectorAll('.role-btn').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.role-btn').forEach(x => x.classList.remove('selected'));
+  b.classList.add('selected');
+  role = b.dataset.role;
+  // Le mot de passe n'est demandé QUE pour Admin
+  $('#pwd-zone').classList.toggle('hidden', role !== 'admin');
+  if (role === 'admin') setTimeout(() => $('#p').focus(), 60);
+}));
+
  $('#eye').addEventListener('click', () => {
   const p = $('#p');
   const show = p.type === 'password';
@@ -62,28 +90,48 @@ const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
   $('#eye').textContent = show ? '🙈' : '👁️';
   p.focus();
 });
+
 async function doLogin(){
   const err = $('#err'); err.innerHTML = '';
-  const u = $('#u').value.trim(), p = $('#p').value;
-  if (!u || !p){ err.innerHTML = '<div class="msg">Renseignez le nom d\'utilisateur et le mot de passe.</div>'; return; }
-  const btn = $('#btn'); btn.disabled = true; btn.textContent = 'Connexion…';
-  try {
-    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({username: u, password: p})});
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok){
-      err.innerHTML = `<div class="msg">❌ ${esc(d.error || 'Identifiants incorrects')}</div>`;
+  const btn = $('#btn');
+  if (role === 'admin'){
+    const p = $('#p').value;
+    if (!p){ err.innerHTML = '<div class="msg">Saisissez le mot de passe administrateur.</div>'; return; }
+    btn.disabled = true; btn.textContent = 'Connexion…';
+    try {
+      const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({role: 'admin', password: p})});
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok){
+        err.innerHTML = `<div class="msg">❌ ${esc(d.error || 'Mot de passe incorrect')}</div>`;
+        btn.disabled = false; btn.textContent = 'Se connecter';
+        return;
+      }
+      window.location.href = '/';
+    } catch(e){
+      err.innerHTML = '<div class="msg">❌ Connexion au serveur impossible.</div>';
       btn.disabled = false; btn.textContent = 'Se connecter';
-      return;
     }
-    window.location.href = '/';
-  } catch(e){
-    err.innerHTML = '<div class="msg">❌ Connexion au serveur impossible.</div>';
-    btn.disabled = false; btn.textContent = 'Se connecter';
+  } else {
+    // Utilisateur : connexion directe sans mot de passe
+    btn.disabled = true; btn.textContent = 'Connexion…';
+    try {
+      const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({role: 'viewer', direct: true})});
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok){
+        err.innerHTML = `<div class="msg">❌ ${esc(d.error || 'Connexion impossible')}</div>`;
+        btn.disabled = false; btn.textContent = 'Se connecter';
+        return;
+      }
+      window.location.href = '/';
+    } catch(e){
+      err.innerHTML = '<div class="msg">❌ Connexion au serveur impossible.</div>';
+      btn.disabled = false; btn.textContent = 'Se connecter';
+    }
   }
 }
  $('#btn').addEventListener('click', doLogin);
- $('#u').addEventListener('keydown', e => { if (e.key === 'Enter') $('#p').focus(); });
  $('#p').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 </script>
 </body>
