@@ -8,7 +8,6 @@ from werkzeug.exceptions import HTTPException
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.json.sort_keys = False
 
-# ================= AUTHENTIFICATION =================
 def _load_secret():
     if os.environ.get('SECRET_KEY'):
         return os.environ['SECRET_KEY']
@@ -48,7 +47,6 @@ def admin_required(fn):
         return fn(*a, **kw)
     return wrapper
 
-# ================= CONFIG =================
 JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 JOURS_ABR = {'Lundi': 'lun.', 'Mardi': 'mar.', 'Mercredi': 'mer.', 'Jeudi': 'jeu.',
              'Vendredi': 'ven.', 'Samedi': 'sam.', 'Dimanche': 'dim.'}
@@ -59,7 +57,7 @@ ENTITES_MAIN = ENTITES
 ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
-# ================= PERSISTANCE MONGODB =================
+print(">>> MONGODB_URI présente :", bool(os.environ.get('MONGODB_URI')))
 mongo_col = None
 Binary = None
 if os.environ.get('MONGODB_URI'):
@@ -70,10 +68,12 @@ if os.environ.get('MONGODB_URI'):
         _mc = MongoClient(os.environ['MONGODB_URI'], serverSelectionTimeoutMS=8000)
         _mc.admin.command('ping')
         mongo_col = _mc[os.environ.get('MONGODB_DB', 'logiplan')]['state']
-        app.logger.info("MongoDB connecté : persistance permanente active")
+        print(">>> MongoDB CONNECTÉ : persistance permanente active")
     except Exception as e:
         mongo_col = None
-        app.logger.warning(f"MongoDB indisponible, persistance par fichier uniquement : {e}")
+        print(">>> MongoDB ÉCHEC :", e)
+else:
+    print(">>> MongoDB DÉSACTIVÉ : variable MONGODB_URI absente")
 
 def alpha_prefix(mat):
     m = re.match(r'^[A-Z]+', str(mat).strip().upper())
@@ -128,7 +128,6 @@ def load_state():
 
 STATE = load_state()
 
-# ---------- Sérialisation Mongo au format JSON (insensible aux versions pandas) ----------
 def state_to_doc():
     def dfd(d):
         return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
@@ -156,6 +155,8 @@ def apply_doc_to_state(doc):
             if f'{j}_Flag' in df.columns:
                 df[f'{j}_Flag'] = pd.to_numeric(df[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
         if planning_valide(df): plannings[w] = df
+        else:
+            print(f">>> Semaine {w} rejetée (colonnes manquantes)")
     commandes = {}
     for w, d in (doc.get('commandes') or {}).items():
         df = df_from_payload(d)
@@ -182,6 +183,7 @@ def apply_doc_to_state(doc):
     STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
 
 if not STATE['plannings'] and mongo_col is not None:
+    print(">>> Restauration : état local vide, tentative Mongo...")
     try:
         doc = mongo_col.find_one({'_id': 'state'})
         if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
@@ -191,11 +193,34 @@ if not STATE['plannings'] and mongo_col is not None:
                     pickle.dump(STATE, f)
             except Exception:
                 pass
-            app.logger.info("État restauré depuis MongoDB (JSON)")
+            print(">>> État restauré depuis MongoDB (JSON), semaines =", list(STATE['plannings'].keys()))
+        elif doc and 'blob' in doc:
+            mongo_col.delete_one({'_id': 'state'})
+            print(">>> Ancien blob pickle supprimé (format obsolète) — réimportez vos données")
         else:
-            app.logger.warning("MongoDB : document vide ou absent, rien à restaurer")
+            print(">>> Mongo : document vide ou absent — réimportez vos données")
     except Exception as e:
-        app.logger.warning(f"Restauration MongoDB impossible : {e}")
+        print(">>> Restauration MongoDB impossible :", e)
+
+def save_state():
+    try:
+        with open(DATA_FILE, 'wb') as f:
+            pickle.dump(STATE, f)
+    except Exception:
+        pass
+    if mongo_col is not None:
+        try:
+            if not STATE['plannings']:
+                doc = mongo_col.find_one({'_id': 'state'}, {'plannings': 1})
+                if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
+                    print(">>> save_state BLOQUÉ : état local vide, Mongo conservé")
+                    return
+            payload = state_to_doc()
+            payload['updated'] = datetime.datetime.utcnow()
+            mongo_col.update_one({'_id': 'state'}, {'$set': payload}, upsert=True)
+            print(">>> save_state OK : semaines =", list(STATE['plannings'].keys()))
+        except Exception as e:
+            print(">>> save_state échec Mongo :", e)
 
 def planning_valide(df):
     return (isinstance(df, pd.DataFrame) and not df.empty
@@ -734,7 +759,6 @@ def handle_exception(e):
         return jsonify({'error': e.description}), e.code
     return jsonify({'error': f"Erreur serveur : {type(e).__name__} — {e}"}), 500
 
-# ================= ROUTES AUTH =================
 @app.get('/api/me')
 def api_me():
     return {'role': current_role()}
@@ -759,7 +783,11 @@ def api_logout():
     flask_session.clear()
     return {'ok': True}
 
-# ================= ACCÈS AUX PAGES =================
+@app.get('/logout')
+def logout_get():
+    flask_session.clear()
+    return send_from_directory(app.static_folder, 'login.html')
+
 @app.get('/')
 def index():
     if current_role() not in ('admin', 'viewer'):
@@ -772,7 +800,6 @@ def guard_index():
         return send_from_directory(app.static_folder, 'login.html')
     return send_from_directory(app.static_folder, 'index.html')
 
-# ================= ROUTES DATA =================
 @app.get('/api/state')
 @login_required
 def api_state():
@@ -788,21 +815,7 @@ def api_state():
 @app.get('/api/backup_export')
 @login_required
 def api_backup_export():
-    def dfd(d):
-        return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
-    plannings = {w: dfd(df) for w, df in STATE['plannings'].items()}
-    commandes = {w: dfd(df) for w, df in STATE['commandes'].items() if isinstance(df, pd.DataFrame)}
-    ref = dfd(STATE.get('reference')) if isinstance(STATE.get('reference'), pd.DataFrame) else None
-    calculs = {}
-    for w, c in STATE['calculs'].items():
-        if isinstance(c, dict):
-            out = {k: c[k] for k in ('presta', 'theorique', 'taux') if isinstance(c.get(k), dict)}
-            if isinstance(c.get('results'), dict): out['results'] = c['results']
-            calculs[w] = out
-    return {'plannings': plannings, 'commandes': commandes, 'reference': ref,
-            'calculs': calculs, 'current_week': STATE.get('current_week'),
-            'synth_pu': STATE.get('synth_pu', 0), 'synth_edits': STATE.get('synth_edits', {}),
-            'menu_edits': STATE.get('menu_edits', {})}
+    return state_to_doc()
 
 @app.post('/api/backup_import')
 @login_required
@@ -811,40 +824,9 @@ def api_backup_import():
         return jsonify({'error': "Des données existent déjà : restauration réservée à l'administrateur"}), 403
     try:
         b = request.get_json(force=True, silent=True) or {}
-        plannings = {}
-        for w, d in (b.get('plannings') or {}).items():
-            df = df_from_payload(d)
-            if df is None: continue
-            for j in JOURS:
-                if f'{j}_Flag' in df.columns:
-                    df[f'{j}_Flag'] = pd.to_numeric(df[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
-            if planning_valide(df): plannings[w] = df
-        commandes = {}
-        for w, d in (b.get('commandes') or {}).items():
-            df = df_from_payload(d)
-            if df is None or 'Paid ID' not in df.columns: continue
-            df['Paid ID'] = df['Paid ID'].apply(clean_id)
-            df = df[df['Paid ID'] != '']
-            if not df.empty: commandes[w] = df
-        ref = df_from_payload(b.get('reference'))
-        if ref is not None and not {'WORKDAY ID', 'REF_PAID_ID'}.issubset(ref.columns):
-            ref = None
-        calculs = {}
-        for w, c in (b.get('calculs') or {}).items():
-            if isinstance(c, dict):
-                calculs[w] = {k: v for k, v in c.items()
-                              if k in ('presta', 'theorique', 'taux', 'results') and isinstance(v, dict)}
-        STATE['plannings'] = plannings
-        STATE['commandes'] = commandes
-        STATE['reference'] = ref
-        STATE['calculs'] = calculs
-        if isinstance(b.get('synth_edits'), dict): STATE['synth_edits'] = b['synth_edits']
-        if isinstance(b.get('menu_edits'), dict): STATE['menu_edits'] = b['menu_edits']
-        STATE['synth_pu'] = _to_float(b.get('synth_pu'), 0)
-        cw = b.get('current_week')
-        STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
+        apply_doc_to_state(b)
         save_state()
-        return {'ok': True, 'weeks': sorted(plannings.keys())}
+        return {'ok': True, 'weeks': sorted(STATE['plannings'].keys())}
     except Exception as e:
         app.logger.exception("backup_import")
         return jsonify({'error': f"Restauration impossible : {e}"}), 400
@@ -1231,7 +1213,6 @@ def api_export_anom():
     if r is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'constats_commande.xlsx')
 
-# ================= SYNTHÈSE MENSUELLE =================
 SYN_COLS = ['Date', 'Semaine', 'Planifié total', 'À commander', 'Commande finale', 'Consommé',
             'Non consommé', 'À facturer', 'QS (%)', 'QS conso vs commandé final (%)',
             'MONTANT DA MGA HT', 'Nombre de plat ajusté', 'Pourcentage plat ajusté (%)']
