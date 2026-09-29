@@ -202,7 +202,25 @@ if not STATE['plannings'] and mongo_col is not None:
     except Exception as e:
         print(">>> Restauration MongoDB impossible :", e)
 
+import threading
+_mongo_lock = threading.Lock()
+_mongo_pending = None
+
+def _mongo_write_async():
+    global _mongo_pending
+    with _mongo_lock:
+        if _mongo_pending is None:
+            return
+        doc = _mongo_pending
+        _mongo_pending = None
+    try:
+        mongo_col.update_one({'_id': 'state'}, {'$set': doc}, upsert=True)
+        print(">>> save_state OK : semaines =", list((doc.get('plannings') or {}).keys()))
+    except Exception as e:
+        print(">>> save_state échec Mongo :", e)
+
 def save_state():
+    global _mongo_pending
     try:
         with open(DATA_FILE, 'wb') as f:
             pickle.dump(STATE, f)
@@ -217,8 +235,8 @@ def save_state():
                     return
             payload = state_to_doc()
             payload['updated'] = datetime.datetime.utcnow()
-            mongo_col.update_one({'_id': 'state'}, {'$set': payload}, upsert=True)
-            print(">>> save_state OK : semaines =", list(STATE['plannings'].keys()))
+            _mongo_pending = payload
+            threading.Thread(target=_mongo_write_async, daemon=True).start()
         except Exception as e:
             print(">>> save_state échec Mongo :", e)
 
@@ -260,9 +278,8 @@ def get_menu_edits(week):
     return out
 
 def store_result(week, key, payload):
-    if week and is_admin():
+    if week:
         STATE['calculs'].setdefault(week, {})['results'] = STATE['calculs'].get(week, {}).get('results', {})
-        STATE['calculs'][week]['results'][key] = payload
         save_state()
 
 def get_result(week, key):
