@@ -60,7 +60,9 @@ async function api(url, opts={}){
 async function getResult(key){
   try {
     const d = await api('/api/result/' + key);
-    return (d && d.found && d.data) ? d.data : null;
+    if (!d) return null;
+    if (typeof d === 'object' && 'found' in d) return d.found ? d.data : null;
+    return d;
   } catch(e){ return null; }
 }
 function debounce(fn, ms=250){ let t; return (...a)=>{ clearTimeout(t); t = setTimeout(()=>fn(...a), ms); }; }
