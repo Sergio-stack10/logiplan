@@ -915,9 +915,7 @@ def api_delete_week():
 def api_result(key):
     week = STATE.get('current_week')
     r = get_result(week, key)
-    if r is None:
-        return jsonify(None)
-    return jsonify(r)
+    return {'found': r is not None, 'data': r}
 
 @app.get('/api/page1')
 @login_required
