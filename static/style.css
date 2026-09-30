@@ -253,4 +253,7 @@ table.data tr.subtotal td{
 
 /* ===== Session Utilisateur : masquage des sections admin ===== */
 .viewer-hidden{display:none!important}
+
+/* En-têtes avec dates : autoriser 2 lignes si besoin */
+table.data th{white-space:normal}
 }
