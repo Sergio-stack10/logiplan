@@ -181,25 +181,7 @@ def apply_doc_to_state(doc):
     cw = doc.get('current_week')
     STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
 
-if not STATE['plannings'] and mongo_col is not None:
-    print(">>> Restauration : état local vide, tentative Mongo...")
-    try:
-        doc = mongo_col.find_one({'_id': 'state'})
-        if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
-            apply_doc_to_state(doc)
-            try:
-                with open(DATA_FILE, 'wb') as f:
-                    pickle.dump(STATE, f)
-            except Exception:
-                pass
-            print(">>> État restauré depuis MongoDB (JSON), semaines =", list(STATE['plannings'].keys()))
-        elif doc and 'blob' in doc:
-            mongo_col.delete_one({'_id': 'state'})
-            print(">>> Ancien blob pickle supprimé (format obsolète) — réimportez vos données")
-        else:
-            print(">>> Mongo : document vide ou absent — réimportez vos données")
-    except Exception as e:
-        print(">>> Restauration MongoDB impossible :", e)
+
 
 # ---------- save_state asynchrone (rapide) + garde-fou ----------
 _mongo_lock = threading.Lock()
@@ -545,6 +527,26 @@ def enforce_cols(df, order):
     for c in order:
         if c not in df.columns: df[c] = ""
     return df[order]
+
+if not STATE['plannings'] and mongo_col is not None:
+    print(">>> Restauration : état local vide, tentative Mongo...")
+    try:
+        doc = mongo_col.find_one({'_id': 'state'})
+        if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
+            apply_doc_to_state(doc)
+            try:
+                with open(DATA_FILE, 'wb') as f:
+                    pickle.dump(STATE, f)
+            except Exception:
+                pass
+            print(">>> État restauré depuis MongoDB (JSON), semaines =", list(STATE['plannings'].keys()))
+        elif doc and 'blob' in doc:
+            mongo_col.delete_one({'_id': 'state'})
+            print(">>> Ancien blob pickle supprimé (format obsolète) — réimportez vos données")
+        else:
+            print(">>> Mongo : document vide ou absent — réimportez vos données")
+    except Exception as e:
+        print(">>> Restauration MongoDB impossible :", e)
 
 def get_week_number(data, engine):
     try:
