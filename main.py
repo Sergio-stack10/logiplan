@@ -1,4 +1,4 @@
-import os, io, re, pickle, datetime, unicodedata, gzip, secrets
+import os, io, re, pickle, datetime, unicodedata, gzip, secrets, threading
 from functools import wraps
 import pandas as pd
 import numpy as np
@@ -8,6 +8,7 @@ from werkzeug.exceptions import HTTPException
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 app.json.sort_keys = False
 
+# ================= AUTHENTIFICATION =================
 def _load_secret():
     if os.environ.get('SECRET_KEY'):
         return os.environ['SECRET_KEY']
@@ -47,6 +48,7 @@ def admin_required(fn):
         return fn(*a, **kw)
     return wrapper
 
+# ================= CONFIG =================
 JOURS = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 JOURS_ABR = {'Lundi': 'lun.', 'Mardi': 'mar.', 'Mercredi': 'mer.', 'Jeudi': 'jeu.',
              'Vendredi': 'ven.', 'Samedi': 'sam.', 'Dimanche': 'dim.'}
@@ -57,14 +59,12 @@ ENTITES_MAIN = ENTITES
 ENTITY_COLORS = {"HORS PROD": "#2E75B6", "PROD / PLANIFIÉ": "#548235"}
 DATA_FILE = 'logiplan_state.pkl'
 
+# ================= PERSISTANCE MONGODB =================
 print(">>> MONGODB_URI présente :", bool(os.environ.get('MONGODB_URI')))
 mongo_col = None
-Binary = None
 if os.environ.get('MONGODB_URI'):
     try:
         from pymongo import MongoClient
-        from bson.binary import Binary as _B
-        Binary = _B
         _mc = MongoClient(os.environ['MONGODB_URI'], serverSelectionTimeoutMS=8000)
         _mc.admin.command('ping')
         mongo_col = _mc[os.environ.get('MONGODB_DB', 'logiplan')]['state']
@@ -128,6 +128,7 @@ def load_state():
 
 STATE = load_state()
 
+# ---------- Sérialisation Mongo au format JSON (insensible aux versions pandas) ----------
 def state_to_doc():
     def dfd(d):
         return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
@@ -155,8 +156,6 @@ def apply_doc_to_state(doc):
             if f'{j}_Flag' in df.columns:
                 df[f'{j}_Flag'] = pd.to_numeric(df[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
         if planning_valide(df): plannings[w] = df
-        else:
-            print(f">>> Semaine {w} rejetée (colonnes manquantes)")
     commandes = {}
     for w, d in (doc.get('commandes') or {}).items():
         df = df_from_payload(d)
@@ -202,7 +201,7 @@ if not STATE['plannings'] and mongo_col is not None:
     except Exception as e:
         print(">>> Restauration MongoDB impossible :", e)
 
-import threading
+# ---------- save_state asynchrone (rapide) + garde-fou ----------
 _mongo_lock = threading.Lock()
 _mongo_pending = None
 
@@ -228,10 +227,10 @@ def save_state():
         pass
     if mongo_col is not None:
         try:
-            if not STATE['plannings']:
+            if not STATE['plannings'] and not is_admin():
                 doc = mongo_col.find_one({'_id': 'state'}, {'plannings': 1})
                 if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
-                    print(">>> save_state BLOQUÉ : état local vide, Mongo conservé")
+                    print(">>> save_state BLOQUÉ : état local vide (non-admin), Mongo conservé")
                     return
             payload = state_to_doc()
             payload['updated'] = datetime.datetime.utcnow()
@@ -769,13 +768,14 @@ def gzip_json(resp):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    app.logger.exception("Erreur serveur LogiPlan")
     if isinstance(e, HTTPException):
         if e.code == 404 and request.path.startswith('/api/'):
             return jsonify({'error': f"Route introuvable : {request.path}"}), 404
         return jsonify({'error': e.description}), e.code
+    app.logger.exception("Erreur serveur LogiPlan")
     return jsonify({'error': f"Erreur serveur : {type(e).__name__} — {e}"}), 500
 
+# ================= ROUTES AUTH =================
 @app.get('/api/me')
 def api_me():
     return {'role': current_role()}
@@ -805,6 +805,7 @@ def logout_get():
     flask_session.clear()
     return send_from_directory(app.static_folder, 'login.html')
 
+# ================= ACCÈS AUX PAGES =================
 @app.get('/')
 def index():
     if current_role() not in ('admin', 'viewer'):
@@ -817,6 +818,7 @@ def guard_index():
         return send_from_directory(app.static_folder, 'login.html')
     return send_from_directory(app.static_folder, 'index.html')
 
+# ================= ROUTES DATA =================
 @app.get('/api/state')
 @login_required
 def api_state():
@@ -915,14 +917,7 @@ def api_delete_week():
 def api_result(key):
     week = STATE.get('current_week')
     r = get_result(week, key)
-    # Rétro-compatibilité : p2 sans champ presta → complète depuis les références Effectifs
-    if r is not None and key == 'p2' and not r.get('presta'):
-        _, presta_map = get_effectifs_refs(week)
-        if presta_map:
-            r['presta'] = {j: _to_int((presta_map or {}).get(j, 0)) for j in JOURS}
-    if r is None:
-        return jsonify(None)
-    return jsonify(r)
+    return {'found': r is not None, 'data': r}
 
 @app.get('/api/page1')
 @login_required
@@ -977,7 +972,6 @@ def api_page2():
         p['metrics'] = {j: (int(round(float(tot.iloc[0][j]))) if not tot.empty else 0) for j in JOURS}
         p['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
         store_result(week, 'p2', {'rows': p['rows'], 'metrics': p['metrics'], 'presta': p['presta']})
-        save_state()
         return p
     taux_by_day = get_week_taux(week)
     taux = sum(taux_by_day.values()) / 7.0
@@ -1001,13 +995,13 @@ def api_export_page2():
         prest = [_to_int(request.args.get(f'prest_{j}')) for j in JOURS]
         pivot = build_pivot(pl, taux, prest)
         _save_p2_refs(week, pivot, prest)
-        save_state()
     else:
         taux_by_day = get_week_taux(week)
         taux = sum(taux_by_day.values()) / 7.0
         _, presta_map = get_effectifs_refs(week)
         prest = [_to_int((presta_map or {}).get(j, 0)) for j in JOURS]
         pivot = build_pivot(pl, taux, prest)
+    save_state()
     return dl(excel_bytes(pivot), 'effectifs.xlsx')
 
 @app.get('/api/page3')
@@ -1235,6 +1229,7 @@ def api_export_anom():
     if r is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'constats_commande.xlsx')
 
+# ================= SYNTHÈSE MENSUELLE =================
 SYN_COLS = ['Date', 'Semaine', 'Planifié total', 'À commander', 'Commande finale', 'Consommé',
             'Non consommé', 'À facturer', 'QS (%)', 'QS conso vs commandé final (%)',
             'MONTANT DA MGA HT', 'Nombre de plat ajusté', 'Pourcentage plat ajusté (%)']
