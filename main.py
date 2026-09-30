@@ -915,7 +915,14 @@ def api_delete_week():
 def api_result(key):
     week = STATE.get('current_week')
     r = get_result(week, key)
-    return {'found': r is not None, 'data': r}
+    # Rétro-compatibilité : p2 sans champ presta → complète depuis les références Effectifs
+    if r is not None and key == 'p2' and not r.get('presta'):
+        _, presta_map = get_effectifs_refs(week)
+        if presta_map:
+            r['presta'] = {j: _to_int((presta_map or {}).get(j, 0)) for j in JOURS}
+    if r is None:
+        return jsonify(None)
+    return jsonify(r)
 
 @app.get('/api/page1')
 @login_required
