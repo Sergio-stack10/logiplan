@@ -336,6 +336,19 @@ async function refreshState(){
   if (b.dataset.tab === 'p8'){ const s8 = await getResult('synthese'); if (s8) renderSynthese(s8); }
 }));
 
+function applyPrestaValues(p2){
+  if (!p2 || !p2.presta) return false;
+  let ok = false;
+  JOURS.forEach(j => {
+    const el = document.getElementById('prest-' + j);
+    if (el){
+      const v = Number(p2.presta[j] ?? 0);
+      if (el.value !== String(v)){ el.value = v; ok = true; }
+    }
+  });
+  return ok;
+}
+
 async function autoLoadAll(){
   try {
     const [p2, p3, p4, conf, recap, syn] = await Promise.all(
@@ -345,7 +358,7 @@ async function autoLoadAll(){
       if ($('#p2-metrics')) $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
         `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
          <div class="val">${p2.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
-      if (p2.presta) JOURS.forEach(j => { const el = document.getElementById('prest-' + j); if (el) el.value = p2.presta[j] ?? 0; });
+      applyPrestaValues(p2);
     }
     if (p3 && p3.pivot && p3.pivot.rows)
       $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
@@ -1079,22 +1092,11 @@ tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2p
 /* ---------- Démarrage ---------- */
 async function startApp(){
   await restoreIfEmpty();
-  try { await refreshState(); await loadP1(); await autoLoadAll(); } catch(e){}
-}
-(async function boot(){
-  MULTI_IDS.forEach(initMultiSelect);
+  try { await refreshState(); await loadP1(); } catch(e){}
+  // Réaffiche les prestataires de la semaine courante dès l'ouverture
   try {
-    const me = await api('/api/me');
-    console.log('[LogiPlan] Session :', me);
-    if (!me.role){
-      console.warn('[LogiPlan] Pas de session valide → connexion');
-      window.location.href = '/';
-      return;
-    }
-    ROLE = me.role; applyRoleUI();
-    await startApp();
-  } catch(e){
-    console.error('[LogiPlan] Boot échoué :', e);
-    window.location.href = '/';
-  }
-})();
+    const p2 = await getResult('p2');
+    if (applyPrestaValues(p2)) toast('Prestataires hors planning rechargés ✅');
+  } catch(e){}
+  try { await autoLoadAll(); } catch(e){}
+}
