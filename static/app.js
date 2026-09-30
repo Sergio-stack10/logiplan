@@ -1,6 +1,8 @@
 'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
+let JOURS_DATE = {};                                  // {Lundi:'lun. 14/09', ...} de la semaine courante
+const dayLabel = j => JOURS_DATE[j] || j;
 let ROLE = null;
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -285,6 +287,31 @@ async function refreshState(){
     $('#sel-week').innerHTML = s.weeks.map(w => `<option${w===s.current_week?' selected':''}>${esc(w)}</option>`).join('') || '<option value="">—</option>';
     $('#sel-week').disabled = !s.weeks.length;
     $('#week-badge').textContent = s.current_week ? 'Semaine ' + s.current_week : 'Aucune semaine';
+      // Calcul des dates réelles de la semaine courante
+  JOURS_DATE = {};
+  try {
+    const m = String(s.current_week || '').toUpperCase().match(/S(\d{1,2})/);
+    if (m){
+      const wk = parseInt(m[1], 10);
+      const now = new Date();
+      for (const y of [now.getFullYear(), now.getFullYear() - 1, now.getFullYear() + 1]){
+        const jan4 = new Date(Date.UTC(y, 0, 4));
+        const dow = jan4.getUTCDay() || 7;
+        const monday = new Date(jan4);
+        monday.setUTCDate(jan4.getUTCDate() - dow + 1 + (wk - 1) * 7);
+        if (y === now.getFullYear() && (monday.getUTCMonth() + 1) !== s.current_week_month_placeholder) {}
+        const okYear = (monday.getUTCFullYear() === y);
+        if (!okYear) continue;
+        JOURS_DATE = Object.fromEntries(JOURS.map((j, i) => {
+          const d = new Date(monday);
+          d.setUTCDate(monday.getUTCDate() + i);
+          return [j, ['lun.','mar.','mer.','jeu.','ven.','sam.','dim.'][i] + ' ' +
+                 String(d.getUTCDate()).padStart(2,'0') + '/' + String(d.getUTCMonth()+1).padStart(2,'0')];
+        }));
+        break;
+      }
+    }
+  } catch(e){}
     if (!s.weeks.length){
       toast("⚠️ Aucune semaine sur le serveur : l'administrateur doit importer les fichiers.", 'warn');
     }
@@ -376,7 +403,7 @@ function planTable(rows){
   const lab = {DE:'Début', A:'Fin', Pause:'Pause', Flag:'✓'};
   let h = '<div class="tscroll"><table class="data plan"><thead>';
   h += '<tr class="grp-row"><th colspan="6">👤 Identité &amp; affectation</th>';
-  JOURS.forEach(j => h += `<th colspan="4">${j}</th>`);
+  JOURS.forEach(j => h += `<th colspan="4">${esc(dayLabel(j))}</th>`);
   h += '</tr><tr class="cols-row">';
   base.forEach(c => h += `<th>${c==='TRANSPORT'?'Transport':c}</th>`);
   JOURS.forEach(j => ['DE','A','Pause','Flag'].forEach(s => h += `<th>${lab[s]}</th>`));
@@ -419,7 +446,7 @@ on('#btn-p2', 'click', async () => {
     $('#out-p2').innerHTML = tableHTML(orderedRows(d.rows, ['Projet', ...JOURS]));
     $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
       `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
-       <div class="val">${d.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
+       <div class="val">${d.metrics[j]}</div><div class="lbl">${esc(dayLabel(j))}</div></div>`).join('');
     await saveBackup();
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p2'), false);
@@ -485,7 +512,7 @@ function confTable(rows){
   const base = ['Workday ID','Paid ID','Nom','Projet','Statut'];
   let h = '<div class="tscroll"><table class="data conf"><thead>';
   h += '<tr class="grp-row"><th colspan="5">👤 Identité</th>';
-  JOURS.forEach(j => h += `<th colspan="2">${j}</th>`);
+  JOURS.forEach(j => h += `<th colspan="2">${esc(dayLabel(j))}</th>`);
   h += '</tr><tr class="cols-row">';
   base.forEach(c => h += `<th>${esc(c)}</th>`);
   JOURS.forEach(() => h += '<th>Planning</th><th>Commande</th>');
@@ -582,7 +609,7 @@ function entityTableHTML(E, dayIso){
   const cols = Object.keys(rows[0]);
   const editable = (ROLE === 'admin' && E.entity === 'HORS PROD' && dayIso);
   let h = '<div class="tscroll"><table class="data"><thead><tr>' +
-          cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+          cols.map(c => `<th>${esc(dayLabel(c))}</th>`).join('') + '</tr></thead><tbody>';
   rows.forEach(r => {
     const c0 = String(r['Choix'] ?? '');
     let cls = '';
