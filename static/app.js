@@ -1,8 +1,6 @@
 'use strict';
 const JOURS = ['Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi','Dimanche'];
 const DAY_ICONS = ['🔵','🟠','🟢','🟣','🔴','🟡','⚫'];
-let JOURS_DATE = {};                                  // {Lundi:'lun. 14/09', ...} de la semaine courante
-const dayLabel = j => JOURS_DATE[j] || j;
 let ROLE = null;
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -82,7 +80,7 @@ function busy(btn, on_, label){
 function numVal(id){ const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
 function intVal(id){ const el = document.getElementById(id); const v = el ? parseInt(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
 
-/* ================= MULTI-SELECT (cases à cocher) ================= */
+/* ================= MULTI-SELECT (cases à cocher + Tout sélectionner) ================= */
 const MS = { comps: {} };
 function initMultiSelect(id){
   const sel = document.getElementById(id);
@@ -161,7 +159,7 @@ function tableHTML(rows, o={}){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée à afficher.</div>';
   const cols = Object.keys(rows[0]);
   let h = '<div class="tscroll"><table class="data"><thead><tr>' +
-          cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+          cols.map(c => `<th>${esc(dayLabel(c))}</th>`).join('') + '</tr></thead><tbody>';
   rows.forEach(r => {
     let cls = '';
     const c0 = String(r[cols[0]] ?? '');
@@ -179,6 +177,33 @@ function searchRows(rows, text){
   if (!text) return rows;
   const s = text.toLowerCase();
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
+}
+
+/* ================= DATES RÉELLES DES JOURS ================= */
+let JOURS_DATE = {};
+const dayLabel = j => JOURS_DATE[j] || j;
+function computeJoursDate(week){
+  JOURS_DATE = {};
+  try {
+    const m = String(week || '').toUpperCase().match(/S(\d{1,2})/);
+    if (!m) return;
+    const wk = parseInt(m[1], 10);
+    if (wk < 1 || wk > 53) return;
+    const now = new Date();
+    for (const y of [now.getFullYear(), now.getFullYear() - 1, now.getFullYear() + 1]){
+      const jan4 = new Date(Date.UTC(y, 0, 4));
+      const dow = jan4.getUTCDay() || 7;
+      const monday = new Date(jan4);
+      monday.setUTCDate(jan4.getUTCDate() - dow + 1 + (wk - 1) * 7);
+      JOURS_DATE = Object.fromEntries(JOURS.map((j, i) => {
+        const d = new Date(monday);
+        d.setUTCDate(monday.getUTCDate() + i);
+        return [j, ['lun.','mar.','mer.','jeu.','ven.','sam.','dim.'][i] + ' ' +
+               String(d.getUTCDate()).padStart(2,'0') + '/' + String(d.getUTCMonth()+1).padStart(2,'0')];
+      }));
+      break;
+    }
+  } catch(e){}
 }
 
 /* ================= RÔLE ================= */
@@ -201,7 +226,7 @@ function applyRoleUI(){
   ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
 
-/* ---------- Déconnexion (route GET dédiée côté serveur) ---------- */
+/* ---------- Déconnexion ---------- */
 on('#btn-logout', 'click', async () => {
   try { await api('/api/logout', {method:'POST', silent:true}); } catch(e){}
   window.location.href = '/logout';
@@ -224,7 +249,6 @@ async function saveBackup(){
   if (ROLE !== 'admin') return;
   try { const snap = await api('/api/backup_export'); await idbSet('state', snap); } catch(e){}
 }
-/* Restauration ouverte à TOUS les rôles : réamorce un serveur vide */
 async function restoreIfEmpty(){
   try {
     const s = await api('/api/state');
@@ -287,31 +311,7 @@ async function refreshState(){
     $('#sel-week').innerHTML = s.weeks.map(w => `<option${w===s.current_week?' selected':''}>${esc(w)}</option>`).join('') || '<option value="">—</option>';
     $('#sel-week').disabled = !s.weeks.length;
     $('#week-badge').textContent = s.current_week ? 'Semaine ' + s.current_week : 'Aucune semaine';
-      // Calcul des dates réelles de la semaine courante
-  JOURS_DATE = {};
-  try {
-    const m = String(s.current_week || '').toUpperCase().match(/S(\d{1,2})/);
-    if (m){
-      const wk = parseInt(m[1], 10);
-      const now = new Date();
-      for (const y of [now.getFullYear(), now.getFullYear() - 1, now.getFullYear() + 1]){
-        const jan4 = new Date(Date.UTC(y, 0, 4));
-        const dow = jan4.getUTCDay() || 7;
-        const monday = new Date(jan4);
-        monday.setUTCDate(jan4.getUTCDate() - dow + 1 + (wk - 1) * 7);
-        if (y === now.getFullYear() && (monday.getUTCMonth() + 1) !== s.current_week_month_placeholder) {}
-        const okYear = (monday.getUTCFullYear() === y);
-        if (!okYear) continue;
-        JOURS_DATE = Object.fromEntries(JOURS.map((j, i) => {
-          const d = new Date(monday);
-          d.setUTCDate(monday.getUTCDate() + i);
-          return [j, ['lun.','mar.','mer.','jeu.','ven.','sam.','dim.'][i] + ' ' +
-                 String(d.getUTCDate()).padStart(2,'0') + '/' + String(d.getUTCMonth()+1).padStart(2,'0')];
-        }));
-        break;
-      }
-    }
-  } catch(e){}
+    computeJoursDate(s.current_week);
     if (!s.weeks.length){
       toast("⚠️ Aucune semaine sur le serveur : l'administrateur doit importer les fichiers.", 'warn');
     }
@@ -336,19 +336,6 @@ async function refreshState(){
   if (b.dataset.tab === 'p8'){ const s8 = await getResult('synthese'); if (s8) renderSynthese(s8); }
 }));
 
-function applyPrestaValues(p2){
-  if (!p2 || !p2.presta) return false;
-  let ok = false;
-  JOURS.forEach(j => {
-    const el = document.getElementById('prest-' + j);
-    if (el){
-      const v = Number(p2.presta[j] ?? 0);
-      if (el.value !== String(v)){ el.value = v; ok = true; }
-    }
-  });
-  return ok;
-}
-
 async function autoLoadAll(){
   try {
     const [p2, p3, p4, conf, recap, syn] = await Promise.all(
@@ -357,7 +344,7 @@ async function autoLoadAll(){
       $('#out-p2').innerHTML = tableHTML(orderedRows(p2.rows, ['Projet', ...JOURS]));
       if ($('#p2-metrics')) $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
         `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
-         <div class="val">${p2.metrics[j]}</div><div class="lbl">${j}</div></div>`).join('');
+         <div class="val">${p2.metrics[j]}</div><div class="lbl">${esc(dayLabel(j))}</div></div>`).join('');
       applyPrestaValues(p2);
     }
     if (p3 && p3.pivot && p3.pivot.rows)
@@ -447,7 +434,15 @@ on('#btn-exp-p1', 'click', () => {
 
 /* ---------- PAGE 2 ---------- */
 if ($('#p2-presta'))
-  $('#p2-presta').innerHTML = JOURS.map(j => `<label>${j}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
+  $('#p2-presta').innerHTML = JOURS.map(j => `<label>${esc(dayLabel(j))}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
+function applyPrestaValues(p2){
+  if (!p2 || !p2.presta) return false;
+  JOURS.forEach(j => {
+    const el = document.getElementById('prest-' + j);
+    if (el) el.value = Number(p2.presta[j] ?? 0);
+  });
+  return true;
+}
 on('#btn-p2', 'click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
   try {
@@ -622,7 +617,7 @@ function entityTableHTML(E, dayIso){
   const cols = Object.keys(rows[0]);
   const editable = (ROLE === 'admin' && E.entity === 'HORS PROD' && dayIso);
   let h = '<div class="tscroll"><table class="data"><thead><tr>' +
-          cols.map(c => `<th>${esc(dayLabel(c))}</th>`).join('') + '</tr></thead><tbody>';
+          cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
   rows.forEach(r => {
     const c0 = String(r['Choix'] ?? '');
     let cls = '';
@@ -807,7 +802,7 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse (filtres Excel + resize, calcul à la demande) ---------- */
+/* ---------- PAGE 8 : Synthèse (filtres Excel + sous-totaux + resize) ---------- */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
@@ -974,7 +969,6 @@ function renderSynthese(d){
   let rows = filtered ? all.filter(synRowPasses) : all;
   const totalRow = filtered ? synthTotalLocal(rows, 'TOTAL (sélection)')
                             : (d.rows || []).find(r => String(r['Date'] ?? '').toUpperCase().startsWith('TOTAL'));
-  // Sous-totaux par semaine
   const body = [];
   let curWeek = null, curRows = [];
   const flushSub = () => {
@@ -1065,7 +1059,6 @@ async function genSynthese(showToast = true){
   busy($('#btn-p8'), false);
 }
 on('#btn-p8', 'click', () => genSynthese());
-on('#inp-month', 'change', () => {});
 on('#inp-pu', 'change', () => updatePendingCount());
 on('#btn-exp-p8', 'click', async () => {
   try { await downloadPost('/api/export_synthese', 'synthese_mensuelle.xlsx', synthBody()); }
@@ -1093,10 +1086,22 @@ tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2p
 async function startApp(){
   await restoreIfEmpty();
   try { await refreshState(); await loadP1(); } catch(e){}
-  // Réaffiche les prestataires de la semaine courante dès l'ouverture
-  try {
-    const p2 = await getResult('p2');
-    if (applyPrestaValues(p2)) toast('Prestataires hors planning rechargés ✅');
-  } catch(e){}
   try { await autoLoadAll(); } catch(e){}
 }
+(async function boot(){
+  MULTI_IDS.forEach(initMultiSelect);
+  try {
+    const me = await api('/api/me');
+    console.log('[LogiPlan] Session :', me);
+    if (!me.role){
+      console.warn('[LogiPlan] Pas de session valide → connexion');
+      window.location.href = '/';
+      return;
+    }
+    ROLE = me.role; applyRoleUI();
+    await startApp();
+  } catch(e){
+    console.error('[LogiPlan] Boot échoué :', e);
+    window.location.href = '/';
+  }
+})();
