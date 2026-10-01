@@ -443,6 +443,18 @@ function applyPrestaValues(p2){
   });
   return true;
 }
+
+/* Sauvegarde immédiate des prestataires à la saisie (sans recalcul) */
+on('#p2-presta', 'change', debounce(async e => {
+  if (ROLE !== 'admin') return;
+  try {
+    const body = Object.fromEntries(JOURS.map(j => ['prest_' + j, intVal('prest-' + j)]));
+    await api('/api/presta_edit', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)});
+    toast('Prestataires hors planning enregistrés ✅');
+  } catch(e){ toast(esc(e.message), 'err'); }
+}, 600));
+
 on('#btn-p2', 'click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
   try {
