@@ -65,7 +65,10 @@ mongo_col = None
 if os.environ.get('MONGODB_URI'):
     try:
         from pymongo import MongoClient
-        _mc = MongoClient(os.environ['MONGODB_URI'], serverSelectionTimeoutMS=8000)
+        _mc = MongoClient(os.environ['MONGODB_URI'],
+                          serverSelectionTimeoutMS=8000,
+                          connectTimeoutMS=8000,
+                          socketTimeoutMS=15000)
         _mc.admin.command('ping')
         mongo_col = _mc[os.environ.get('MONGODB_DB', 'logiplan')]['state']
         print(">>> MongoDB CONNECTÉ : persistance permanente active")
@@ -75,6 +78,7 @@ if os.environ.get('MONGODB_URI'):
 else:
     print(">>> MongoDB DÉSACTIVÉ : variable MONGODB_URI absente")
 
+# ================= HELPERS DE BASE =================
 def alpha_prefix(mat):
     m = re.match(r'^[A-Z]+', str(mat).strip().upper())
     return m.group(0) if m else ""
@@ -128,7 +132,68 @@ def load_state():
 
 STATE = load_state()
 
-# ---------- Sérialisation Mongo au format JSON (insensible aux versions pandas) ----------
+def jsonable(v):
+    try:
+        if v is None or v is pd.NaT: return None
+        if isinstance(v, bool): return bool(v)
+        if isinstance(v, int): return int(v)
+        if isinstance(v, float): return None if v != v else float(v)
+        if isinstance(v, str): return v
+        if isinstance(v, np.bool_): return bool(v)
+        if isinstance(v, np.integer): return int(v)
+        if isinstance(v, np.floating):
+            f = float(v); return None if f != f else f
+        if isinstance(v, datetime.time): return v.strftime('%H:%M')
+        if isinstance(v, datetime.timedelta): return str(v)
+        if isinstance(v, (datetime.datetime, pd.Timestamp)):
+            return None if pd.isna(v) else str(v)
+        try:
+            if pd.isna(v): return None
+        except Exception: pass
+        return str(v)
+    except Exception:
+        return None
+
+def df_payload(df):
+    if df is None: return {'columns': [], 'rows': []}
+    cols = [str(c) for c in df.columns]
+    rows = [{str(c): jsonable(v) for c, v in rec.items()} for rec in df.to_dict('records')]
+    return {'columns': cols, 'rows': rows}
+
+def df_from_payload(d):
+    if not (isinstance(d, dict) and d.get('columns') and isinstance(d.get('rows'), list)):
+        return None
+    if not d['rows']:
+        return None
+    df = pd.DataFrame(d['rows'])
+    cols = [c for c in d['columns'] if c in df.columns]
+    return df[cols]
+
+def planning_valide(df):
+    return (isinstance(df, pd.DataFrame) and not df.empty
+            and all(c in df.columns for c in COLONNES_OBLIGATOIRES))
+
+def _to_float(v, default=0.0):
+    try:
+        if v is None: return float(default)
+        f = float(v)
+        return f if f == f else float(default)
+    except Exception:
+        return float(default)
+
+def _to_int(v, default=0):
+    try:
+        if v is None: return int(default)
+        return int(float(v))
+    except Exception:
+        return int(default)
+
+def enforce_cols(df, order):
+    for c in order:
+        if c not in df.columns: df[c] = ""
+    return df[order]
+
+# ================= SÉRIALISATION / RESTAURATION MONGO (JSON) =================
 def state_to_doc():
     def dfd(d):
         return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
@@ -151,11 +216,15 @@ def apply_doc_to_state(doc):
     plannings = {}
     for w, d in (doc.get('plannings') or {}).items():
         df = df_from_payload(d)
-        if df is None: continue
+        if df is None:
+            print(f">>> Semaine {w} illisible dans le document Mongo")
+            continue
         for j in JOURS:
             if f'{j}_Flag' in df.columns:
                 df[f'{j}_Flag'] = pd.to_numeric(df[f'{j}_Flag'], errors='coerce').fillna(0).astype(int)
         if planning_valide(df): plannings[w] = df
+        else:
+            print(f">>> Semaine {w} rejetée (colonnes manquantes)")
     commandes = {}
     for w, d in (doc.get('commandes') or {}).items():
         df = df_from_payload(d)
@@ -181,9 +250,28 @@ def apply_doc_to_state(doc):
     cw = doc.get('current_week')
     STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
 
+# ⚠️ Bloc placé ICI : après df_from_payload / planning_valide / _to_float (sinon NameError)
+if not STATE['plannings'] and mongo_col is not None:
+    print(">>> Restauration : état local vide, tentative Mongo...")
+    try:
+        doc = mongo_col.find_one({'_id': 'state'})
+        if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
+            apply_doc_to_state(doc)
+            try:
+                with open(DATA_FILE, 'wb') as f:
+                    pickle.dump(STATE, f)
+            except Exception:
+                pass
+            print(">>> État restauré depuis MongoDB (JSON), semaines =", list(STATE['plannings'].keys()))
+        elif doc and 'blob' in doc:
+            mongo_col.delete_one({'_id': 'state'})
+            print(">>> Ancien blob pickle supprimé (format obsolète) — réimportez vos données")
+        else:
+            print(">>> Mongo : document vide ou absent — réimportez vos données")
+    except Exception as e:
+        print(">>> Restauration MongoDB impossible :", e)
 
-
-# ---------- save_state asynchrone (rapide) + garde-fou ----------
+# ================= SAVE_STATE ASYNCHRONE =================
 _mongo_lock = threading.Lock()
 _mongo_pending = None
 
@@ -221,10 +309,7 @@ def save_state():
         except Exception as e:
             print(">>> save_state échec Mongo :", e)
 
-def planning_valide(df):
-    return (isinstance(df, pd.DataFrame) and not df.empty
-            and all(c in df.columns for c in COLONNES_OBLIGATOIRES))
-
+# ================= ÉTAT COURANT & HELPERS =================
 def current_data():
     week = STATE.get('current_week')
     pl = STATE['plannings'].get(week)
@@ -268,21 +353,6 @@ def get_result(week, key):
     if isinstance(calc, dict) and isinstance(calc.get('results'), dict):
         return calc['results'].get(key)
     return None
-
-def _to_float(v, default=0.0):
-    try:
-        if v is None: return float(default)
-        f = float(v)
-        return f if f == f else float(default)
-    except Exception:
-        return float(default)
-
-def _to_int(v, default=0):
-    try:
-        if v is None: return int(default)
-        return int(float(v))
-    except Exception:
-        return int(default)
 
 def is_planned(val):
     if pd.isna(val) or isinstance(val, bool): return False
@@ -486,68 +556,7 @@ def compute_recap_menus(planning_df, cmd_df, jours, taux_by_day, theo_effectifs,
         day_totals[j] = sum(recap[(j, e)]["total_ac"] for e in ENTITES_MAIN)
     return recap, day_totals
 
-def jsonable(v):
-    try:
-        if v is None or v is pd.NaT: return None
-        if isinstance(v, bool): return bool(v)
-        if isinstance(v, int): return int(v)
-        if isinstance(v, float): return None if v != v else float(v)
-        if isinstance(v, str): return v
-        if isinstance(v, np.bool_): return bool(v)
-        if isinstance(v, np.integer): return int(v)
-        if isinstance(v, np.floating):
-            f = float(v); return None if f != f else f
-        if isinstance(v, datetime.time): return v.strftime('%H:%M')
-        if isinstance(v, datetime.timedelta): return str(v)
-        if isinstance(v, (datetime.datetime, pd.Timestamp)):
-            return None if pd.isna(v) else str(v)
-        try:
-            if pd.isna(v): return None
-        except Exception: pass
-        return str(v)
-    except Exception:
-        return None
-
-def df_payload(df):
-    if df is None: return {'columns': [], 'rows': []}
-    cols = [str(c) for c in df.columns]
-    rows = [{str(c): jsonable(v) for c, v in rec.items()} for rec in df.to_dict('records')]
-    return {'columns': cols, 'rows': rows}
-
-def df_from_payload(d):
-    if not (isinstance(d, dict) and d.get('columns') and isinstance(d.get('rows'), list)):
-        return None
-    if not d['rows']:
-        return None
-    df = pd.DataFrame(d['rows'])
-    cols = [c for c in d['columns'] if c in df.columns]
-    return df[cols]
-
-def enforce_cols(df, order):
-    for c in order:
-        if c not in df.columns: df[c] = ""
-    return df[order]
-
-if not STATE['plannings'] and mongo_col is not None:
-    print(">>> Restauration : état local vide, tentative Mongo...")
-    try:
-        doc = mongo_col.find_one({'_id': 'state'})
-        if doc and isinstance(doc.get('plannings'), dict) and doc['plannings']:
-            apply_doc_to_state(doc)
-            try:
-                with open(DATA_FILE, 'wb') as f:
-                    pickle.dump(STATE, f)
-            except Exception:
-                pass
-            print(">>> État restauré depuis MongoDB (JSON), semaines =", list(STATE['plannings'].keys()))
-        elif doc and 'blob' in doc:
-            mongo_col.delete_one({'_id': 'state'})
-            print(">>> Ancien blob pickle supprimé (format obsolète) — réimportez vos données")
-        else:
-            print(">>> Mongo : document vide ou absent — réimportez vos données")
-    except Exception as e:
-        print(">>> Restauration MongoDB impossible :", e)
-
+# ================= PARSING =================
 def get_week_number(data, engine):
     try:
         xls = pd.ExcelFile(io.BytesIO(data), engine=engine)
@@ -636,6 +645,7 @@ def parse_reference(src_bytes):
     df = df[~df[wd_col].isin(['NAN', 'NONE', '*', ''])]
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
+# ================= CONSTRUCTEURS =================
 def _apply_filters(pl):
     out = pl.copy()
     for col, key in (('TRANSPORT', 'transport'), ('Projet', 'projet'), ('Statut', 'statut')):
