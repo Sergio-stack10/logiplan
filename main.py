@@ -1105,6 +1105,26 @@ def api_set_pu():
         save_state()
     return {'ok': True, 'pu': _to_float(STATE.get('synth_pu'), 0)}
 
+@app.post('/api/presta_edit')
+@admin_required
+def api_presta_edit():
+    """Enregistre immédiatement les prestataires hors planning (sans recalcul)."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        week = STATE.get('current_week')
+        if not week:
+            return jsonify({'error': "Aucune semaine sélectionnée"}), 400
+        prest = [_to_int(body.get(f'prest_{j}')) for j in JOURS]
+        if not any(prest):
+            return {'ok': True}
+        calc = STATE['calculs'].setdefault(week, {})
+        calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
+        save_state()
+        return {'ok': True}
+    except Exception as e:
+        app.logger.exception("api_presta_edit")
+        return jsonify({'error': f"Enregistrement impossible : {e}"}), 400
+
 @app.get('/api/prefixes')
 @login_required
 def api_prefixes():
