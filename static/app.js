@@ -712,7 +712,8 @@ function pdfSimpleTable(rows, cols){
     h += `<tr class="${cls}">` + cols.map(c => {
       let v = r[c];
       if (c.includes('(%)') || c === 'Pourcentage') v = fmtPct(v);
-      return `<td>${esc(v)}</td>`;
+      const style = (c === 'QS (%)') ? ` style="color:${qsClass(Number(r[c] ?? 0)) === 'qs-red' ? '#c0392b' : qsClass(Number(r[c] ?? 0)) === 'qs-orange' ? '#e67e22' : '#27ae60'};font-weight:bold"` : '';
+      return `<td${style}>${esc(v)}</td>`;
     }).join('') + '</tr>';
   });
   return h + '</tbody></table>';
@@ -956,6 +957,18 @@ function enableSynResize(table){
     th.appendChild(handle);
   });
 }
+
+/* Mise en forme conditionnelle QS : rouge <98 <orange <99 <verte <101 <orange <102 <rouge */
+function qsClass(v){
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '';
+  if (n < 98) return 'qs-red';
+  if (n < 99) return 'qs-orange';
+  if (n <= 101) return 'qs-green';
+  if (n <= 102) return 'qs-orange';
+  return 'qs-red';
+}
+
 function renderSynthese(d){
   lastSynData = d;
   if ($('#inp-month') && !$('#inp-month').value) $('#inp-month').value = d.month || '';
@@ -1002,6 +1015,8 @@ function renderSynthese(d){
     SYN_COLS.forEach(c => {
       if (!isTotal && !isSub && SYN_EDITABLE[c] && ROLE === 'admin'){
         h += `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(r.DateIso)}" data-champ="${SYN_EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
+      } else if (c === 'QS (%)'){
+        h += `<td class="${qsClass(r[c])}">${fmtPct(r[c])}</td>`;
       } else if (c.includes('(%)')){
         h += `<td>${fmtPct(r[c])}</td>`;
       } else if (c === 'MONTANT DA MGA HT'){
