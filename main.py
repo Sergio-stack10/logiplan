@@ -346,7 +346,21 @@ def get_menu_edits(week):
 def store_result(week, key, payload):
     if week:
         STATE['calculs'].setdefault(week, {})['results'] = STATE['calculs'].get(week, {}).get('results', {})
-        save_state()
+        STATE['calculs'][week]['results'][key] = payload   # ← LA LIGNE MANQUANTE
+        try:
+            with open(DATA_FILE, 'wb') as f:
+                pickle.dump(STATE, f)
+        except Exception:
+            pass
+        # Persistance Mongo SYNCHRONE : le résultat est dans le cloud avant la réponse HTTP
+        if mongo_col is not None:
+            try:
+                doc = state_to_doc()
+                doc['updated'] = datetime.datetime.utcnow()
+                mongo_col.update_one({'_id': 'state'}, {'$set': doc}, upsert=True)
+                print(">>> store_result persisté dans Mongo :", key)
+            except Exception as e:
+                print(">>> store_result échec Mongo :", e)
 
 def get_result(week, key):
     calc = STATE['calculs'].get(week) if week else None
