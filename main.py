@@ -963,6 +963,12 @@ def api_export_page1():
 
 def _save_p2_refs(week, pivot, prest):
     calc = STATE['calculs'].setdefault(week, {})
+    # Garde-fou : si les champs saisis sont tous à 0 alors qu'une valeur existe déjà,
+    # on conserve les valeurs précédentes (évite l'écrasement par un affichage réinitialisé)
+    old = calc.get('presta') or {}
+    if all(p == 0 for p in prest) and any(_to_int(v) > 0 for v in old.values()):
+        print(">>> _save_p2_refs : prestataires tous à 0 — valeurs précédentes conservées")
+        return
     calc['presta'] = {j: prest[i] for i, j in enumerate(JOURS)}
     tt = pivot[pivot['Projet'] == 'Total Théorique']
     calc['theorique'] = {j: (int(round(float(tt.iloc[0][j]))) if not tt.empty else 0) for j in JOURS}
