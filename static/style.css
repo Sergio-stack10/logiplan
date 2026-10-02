@@ -256,4 +256,10 @@ table.data tr.subtotal td{
 
 /* En-têtes avec dates : autoriser 2 lignes si besoin */
 table.data th{white-space:normal}
+
+/* ===== Synthèse : mise en forme conditionnelle QS ===== */
+td.qs-red{color:#c0392b!important;font-weight:800}
+td.qs-orange{color:#e67e22!important;font-weight:800}
+td.qs-green{color:#27ae60!important;font-weight:800}
+table.data tr:hover td.qs-red{background:var(--teal-soft)!important}
 }
