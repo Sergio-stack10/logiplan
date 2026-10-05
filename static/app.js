@@ -209,7 +209,7 @@ function computeJoursDate(week){
 /* ================= RÔLE ================= */
 const ADMIN_CONTROL_IDS = [
   'btn-import','inp-planning','inp-commande','inp-reference','inp-week','inp-taux',
-  'btn-del-week','btn-p2','btn-p3','btn-p4','btn-p5','btn-p6','btn-p7','btn-p8','btn-exp-p2','btn-matr'
+  'btn-del-week','btn-p2','btn-p3','btn-p4','btn-p5','btn-p6','btn-p7','btn-exp-p2','btn-matr'
 ];
 function applyRoleUI(){
   const viewer = (ROLE === 'viewer');
@@ -223,7 +223,7 @@ function applyRoleUI(){
   });
   const b = $('#role-badge');
   if (b) b.innerHTML = viewer ? '👁️ Utilisateur' : '🛡️ Admin';
-  ['#inp-month','#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
+  ['#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
 
 /* ---------- Déconnexion ---------- */
@@ -1047,6 +1047,18 @@ function renderSynthese(d){
     synEdits[diso][champ] = parseInt(inp.value) || 0;
     updatePendingCount();
   }));
+  // Coloration QS (lue depuis le HTML rendu — fonctionne pour données, sous-totaux et TOTAL)
+  $$('#out-p8 tbody tr').forEach(tr => {
+    const cells = tr.querySelectorAll('td');
+    SYN_COLS.forEach((c, i) => {
+      if (c === 'QS (%)' && cells[i]){
+        const n = parseFloat(cells[i].textContent.replace('%','').replace(',','.'));
+        cells[i].classList.remove('qs-red','qs-orange','qs-green');
+        const cls = qsClass(n);
+        if (cls) cells[i].classList.add(cls);
+      }
+    });
+  });
 }
 function updatePendingCount(){
   const btn = $('#btn-p8');
@@ -1063,7 +1075,6 @@ function updatePendingCount(){
   }
 }
 async function genSynthese(showToast = true){
-  if (ROLE === 'viewer'){ toast("Action réservée à l'administrateur", 'warn'); return; }
   busy($('#btn-p8'), true, 'Calcul…');
   try {
     renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -1075,6 +1086,7 @@ async function genSynthese(showToast = true){
   busy($('#btn-p8'), false);
 }
 on('#btn-p8', 'click', () => genSynthese());
+on('#inp-month', 'change', () => genSynthese());
 on('#inp-pu', 'change', () => updatePendingCount());
 on('#btn-exp-p8', 'click', async () => {
   try { await downloadPost('/api/export_synthese', 'synthese_mensuelle.xlsx', synthBody()); }
