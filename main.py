@@ -1378,5 +1378,114 @@ def api_matricules():
     notfound = check[check['REF_PAID_ID'].isna()]
     return {'mismatch': df_payload(mismatch), 'notfound': df_payload(notfound)}
 
+# ================= DASHBOARD =================
+MONTHS_FR = {1:'Janv.',2:'Févr.',3:'Mars',4:'Avr.',5:'Mai',6:'Juin',
+             7:'Juil.',8:'Août',9:'Sept.',10:'Oct.',11:'Nov.',12:'Déc.'}
+
+def _resolve_date(r, w):
+    """Date ISO d'une ligne de synthèse : DateIso → 'AAAA-MM-JJ' → 'JJ/MM/AAAA' → 'JJ/MM' (via semaine)."""
+    iso = str(r.get('DateIso') or '').strip()
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})', iso)
+    if m:
+        try: return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError: pass
+    lab = str(r.get('Date') or '').strip()
+    if lab.upper().startswith(('TOTAL', 'SOUS-TOTAL')): return ''
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})', lab)
+    if m:
+        try: return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
+        except ValueError: pass
+    m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})', lab)
+    if m:
+        try: return datetime.date(int(m.group(3)), int(m.group(2)), int(m.group(1))).isoformat()
+        except ValueError: pass
+    m = re.match(r'^(\d{1,2})/(\d{1,2})$', lab)
+    if m:
+        try:
+            dd, mm = int(m.group(1)), int(m.group(2))
+            for d_ in derive_week_dates(w).values():
+                if d_.day == dd and d_.month == mm: return d_.isoformat()
+        except Exception: pass
+    return ''
+
+def _dashboard_data(period='journalier', month='', week=''):
+    period = period if period in ('journalier', 'hebdo', 'mensuel') else 'journalier'
+    # 1) Collecte des lignes journalières depuis toutes les synthèses enregistrées
+    by_date = {}
+    for w in sorted(STATE['plannings'].keys()):
+        syn = get_result(w, 'synthese')
+        if not isinstance(syn, dict): continue
+        for r in syn.get('rows', []):
+            date_iso = _resolve_date(r, w)
+            if not date_iso: continue
+            by_date[date_iso] = {   # dédoublonnage par date (même date présente dans plusieurs synthèses du mois)
+                'date': date_iso, 'week': str(r.get('Semaine') or w), 'month': date_iso[:7],
+                'consomme': _to_float(r.get('Consommé')),
+                'commande_finale': _to_float(r.get('Commande finale')),
+                'non_conso': _to_float(r.get('Non consommé')),
+                'montant': _to_float(r.get('MONTANT DA MGA HT')),
+            }
+    daily = sorted(by_date.values(), key=lambda x: x['date'])
+    weeks_available = sorted({d['week'] for d in daily})
+    months_available = sorted({d['month'] for d in daily})
+    # 2) Filtres (ignorés en vue mensuelle)
+    if period != 'mensuel':
+        if week: daily = [d for d in daily if d['week'] == week]
+        if month: daily = [d for d in daily if d['month'] == month]
+    # 3) Agrégation selon la période
+    if period == 'journalier':
+        key_fn = lambda d: d['date']; label_fn = lambda d: d['date'][8:10] + '/' + d['date'][5:7]
+    elif period == 'hebdo':
+        key_fn = lambda d: d['week']; label_fn = lambda d: d['week']
+    else:
+        key_fn = lambda d: d['month']
+        def label_fn(d):
+            try: return f"{MONTHS_FR.get(int(d['month'][5:7]), d['month'])} {d['month'][:4]}"
+            except Exception: return d['month']
+    groups = {}
+    for d in daily: groups.setdefault(key_fn(d), []).append(d)
+    rows = []
+    for k in sorted(groups):
+        g = groups[k]
+        done = [x for x in g if x['consomme'] > 0]
+        qn = sum(x['consomme'] for x in done); qd = sum(x['commande_finale'] for x in done)
+        rows.append({'periode': label_fn(g[0]), 'nb_jours': len(g),
+                     'Consommé': sum(x['consomme'] for x in g),
+                     'Commande finale': sum(x['commande_finale'] for x in g),
+                     'Non consommé': sum(x['non_conso'] for x in g),
+                     'MONTANT DA MGA HT': round(sum(x['montant'] for x in g)),
+                     'QS (%)': (round(qn / qd * 1000) / 10) if qd > 0 else None})
+    done = [x for x in daily if x['consomme'] > 0]
+    qn = sum(x['consomme'] for x in done); qd = sum(x['commande_finale'] for x in done)
+    kpis = {'qs': (round(qn / qd * 1000) / 10) if qd > 0 else None,
+            'consomme': sum(x['consomme'] for x in daily),
+            'non_conso': sum(x['non_conso'] for x in daily),
+            'montant': round(sum(x['montant'] for x in daily)),
+            'nb_jours': len(daily)}
+    return {'period': period, 'month': month, 'week': week,
+            'weeks_available': weeks_available, 'months_available': months_available,
+            'kpis': kpis, 'rows': rows}
+
+@app.get('/api/dashboard')
+@login_required
+def api_dashboard():
+    return _dashboard_data(request.args.get('period') or 'journalier',
+                           request.args.get('month') or '',
+                           request.args.get('week') or '')
+
+@app.get('/api/export_dashboard')
+@login_required
+def api_export_dashboard():
+    d = _dashboard_data(request.args.get('period') or 'journalier',
+                        request.args.get('month') or '',
+                        request.args.get('week') or '')
+    if not d['rows']:
+        return jsonify({'error': "Aucune donnée de synthèse disponible pour le dashboard."}), 400
+    df = pd.DataFrame(d['rows'])[['periode', 'nb_jours', 'Consommé', 'Commande finale',
+                                  'Non consommé', 'QS (%)', 'MONTANT DA MGA HT']]
+    df.columns = ['Période', 'Nb jours', 'Consommé', 'Commande finale',
+                  'Non consommé', 'QS (%)', 'MONTANT DA MGA HT']
+    return dl(excel_bytes(df, sheet='Dashboard'), 'dashboard.xlsx')
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
