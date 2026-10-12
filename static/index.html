@@ -21,6 +21,7 @@
     <button class="tab" data-tab="p7">📋 Constat</button>
     <button class="tab" data-tab="p6">🍽️ Commandes par menu</button>
     <button class="tab" data-tab="p8">🧾 Synthèse</button>
+    <button class="tab" data-tab="p9">📊 Dashboard</button>
   </nav>
   <span class="role-badge" id="role-badge"></span>
   <button id="btn-logout" class="btn-mini" title="Se déconnecter">⏻ Déconnexion</button>
@@ -184,11 +185,33 @@
       <div id="out-p8"><div class="hint">Aucune synthèse générée pour cette semaine.</div></div>
     </div>
   </section>
+
+  <section id="p9" class="panel">
+  <h2 class="page-title">📊 Dashboard — QS · Non consommé · Montant</h2>
+  <div class="card">
+    <div class="toolbar">
+      <select id="db-period">
+        <option value="journalier">📅 Vue journalière</option>
+        <option value="hebdo">🗓️ Vue hebdomadaire</option>
+        <option value="mensuel">📆 Vue mensuelle</option>
+      </select>
+      <input type="month" id="db-month" title="Filtrer par mois">
+      <select id="db-week"><option value="">Semaine : toutes</option></select>
+      <button class="btn primary" id="btn-db">🔄 Actualiser</button>
+      <button class="btn accent" id="btn-exp-db">📥 Excel</button>
+    </div>
+    <div class="count" id="db-count"></div>
+    <div class="metrics" id="db-kpis"></div>
+    <div id="out-db"><div class="hint">Cliquez sur Actualiser pour afficher les graphiques.</div></div>
+  </div>
+</section>
 </main>
 </div>
 
 <footer class="footer-fix">Developped by <span>RAVO SERGIO</span></footer>
 <div id="toasts"></div>
-<script src="/static/app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="/static/app.js?v=6"></script>
+<script src="/static/dashboard.js?v=1"></script>
 </body>
 </html>
