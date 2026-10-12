@@ -16,21 +16,45 @@ function dbQsColor(v){
   return '#c0392b';
 }
 
-function dbMakeChart(id, label, labels, data, colors, yOpts, tooltipFmt){
+/* Formate les montants : M pour millions, K pour milliers */
+function fmtCompact(v){
+  const n = Number(v) || 0, abs = Math.abs(n);
+  if (abs >= 1e6) return (n / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace('.', ',') + ' M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace('.', ',') + ' K';
+  return fmtInt(n);
+}
+
+function dbMakeChart(id, label, labels, data, colors, yOpts, labelFmt){
   const cv = document.getElementById(id);
   if (!cv || !window.Chart) return;
   if (DB.charts[id]){ try { DB.charts[id].destroy(); } catch(e){} }
+  const plugins = window.ChartDataLabels ? [ChartDataLabels] : [];
   DB.charts[id] = new Chart(cv.getContext('2d'), {
     type: 'bar',
     data: { labels, datasets: [{ label, data, backgroundColor: colors, borderRadius: 6,
                                  maxBarThickness: 52, borderWidth: 1, borderColor: 'rgba(0,0,0,.06)' }] },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false },
-                 tooltip: { callbacks: { label: c => ` ${label} : ` + (tooltipFmt ? tooltipFmt(c.parsed.y) : c.parsed.y) } } },
-      scales: { x: { grid: { display: false }, ticks: { maxRotation: 60, autoSkip: true } },
-                y: Object.assign({ beginAtZero: true, grid: { color: 'rgba(0,61,91,.08)' } }, yOpts || {}) }
-    }
+      layout: { padding: { top: 26 } },          /* espace pour les étiquettes au-dessus des barres */
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: c => ` ${label} : ` + (labelFmt ? labelFmt(c.parsed.y) : c.parsed.y) } },
+        datalabels: window.ChartDataLabels ? {
+          anchor: 'end',          /* ancrée au sommet de la barre */
+          align: 'end',           /* placée à l'extérieur, au-dessus */
+          offset: 2,
+          clamp: true,
+          color: '#003D5B',
+          font: { weight: '700', size: 11 },
+          formatter: v => (v === null || v === undefined) ? '' : (labelFmt ? labelFmt(v) : v)
+        } : { display: false }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxRotation: 60, autoSkip: true } },
+        y: Object.assign({ display: false, beginAtZero: true }, yOpts || {})   /* axe vertical masqué */
+      }
+    },
+    plugins
   });
 }
 
@@ -76,9 +100,12 @@ function renderDashboard(d){
 
   if (window.Chart){
     dbMakeChart('db-c-qs', 'QS (%)', labels, qsData, qsData.map(dbQsColor),
-      {beginAtZero: false, suggestedMin: 90, suggestedMax: 105}, v => String(v).replace('.', ',') + ' %');
-    dbMakeChart('db-c-nc', 'Non consommé', labels, ncData, ncData.map(() => '#e74c3c'), null, fmtInt);
-    dbMakeChart('db-c-mt', 'MONTANT DA MGA HT', labels, mtData, mtData.map(() => '#003D5B'), null, fmtInt);
+      {beginAtZero: false, suggestedMin: 90, suggestedMax: 105},
+      v => String(v).replace('.', ',') + ' %');
+    dbMakeChart('db-c-nc', 'Non consommé', labels, ncData, ncData.map(() => '#e74c3c'),
+      null, v => fmtInt(v));
+    dbMakeChart('db-c-mt', 'MONTANT DA MGA HT', labels, mtData, mtData.map(() => '#003D5B'),
+      null, fmtCompact);
   }
 }
 
