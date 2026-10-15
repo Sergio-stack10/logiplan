@@ -1,4 +1,4 @@
-import os, io, re, pickle, datetime, unicodedata, gzip, secrets, threading
+import os, io, re, pickle, datetime, unicodedata, gzip, secrets, threading, difflib
 from functools import wraps
 import pandas as pd
 import numpy as np
@@ -126,6 +126,7 @@ def load_state():
     if not isinstance(s.get('synth_edits'), dict): s['synth_edits'] = {}
     if not isinstance(s.get('menu_edits'), dict): s['menu_edits'] = {}
     if not isinstance(s.get('synth_pu'), (int, float)): s['synth_pu'] = 0
+    if not isinstance(s.get('consommations'), dict): s['consommations'] = {}    
     ref = s.get('reference')
     if ref is not None and not isinstance(ref, pd.DataFrame): s['reference'] = None
     return s
@@ -199,6 +200,7 @@ def state_to_doc():
         return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
     plannings = {w: dfd(df) for w, df in STATE['plannings'].items()}
     commandes = {w: dfd(df) for w, df in STATE['commandes'].items() if isinstance(df, pd.DataFrame)}
+    consommations = {w: dfd(df) for w, df in STATE.get('consommations', {}).items() if isinstance(df, pd.DataFrame)}
     ref = dfd(STATE.get('reference')) if isinstance(STATE.get('reference'), pd.DataFrame) else None
     calculs = {}
     for w, c in STATE['calculs'].items():
@@ -206,7 +208,7 @@ def state_to_doc():
             out = {k: c[k] for k in ('presta', 'theorique', 'taux') if isinstance(c.get(k), dict)}
             if isinstance(c.get('results'), dict): out['results'] = c['results']
             calculs[w] = out
-    return {'plannings': plannings, 'commandes': commandes, 'reference': ref,
+    return {'plannings': plannings, 'commandes': commandes, 'reference': ref,'consommations': consommations,
             'calculs': calculs, 'current_week': STATE.get('current_week'),
             'synth_pu': STATE.get('synth_pu', 0),
             'synth_edits': STATE.get('synth_edits', {}),
@@ -659,6 +661,132 @@ def parse_reference(src_bytes):
     df = df[~df[wd_col].isin(['NAN', 'NONE', '*', ''])]
     return df.drop_duplicates(subset=[wd_col]).rename(columns={wd_col: 'WORKDAY ID', pd_col: 'REF_PAID_ID'})
 
+# ================= CONSOMMATIONS JOURNALIÈRES =================
+DT_RE = re.compile(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?')
+
+def cons_match_keys(s):
+    """Clés de rapprochement tolérantes : gère les préfixes W / WT / WA... (CCMS = W + Code barre)."""
+    s = clean_id(s)
+    if not s: return set()
+    s = re.sub(r"[\s\-_.]", "", s)
+    keys = {s}
+    core = s.lstrip('W')
+    if core:
+        keys.add(core); keys.add('W' + core)
+        if core.startswith('T'):
+            t = core[1:]
+            if t: keys.add(t); keys.add('W' + t); keys.add('WT' + t)
+    return keys
+
+def _extract_datetimes(val):
+    out = []
+    for m in DT_RE.finditer(str(val)):
+        try:
+            out.append(datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                                         int(m.group(4) or 0), int(m.group(5) or 0), int(m.group(6) or 0)))
+        except ValueError: pass
+    return out
+
+def parse_consommation(src_bytes):
+    df = pd.read_excel(io.BytesIO(src_bytes))
+    norm = lambda c: re.sub(r"[^A-Z0-9]", "", strip_accents(str(c)).upper())
+    df.columns = [norm(c) for c in df.columns]
+    ccms_col = next((c for c in df.columns if 'CCMS' in c or 'COMS' in c), None)
+    code_col = next((c for c in df.columns if 'CODEBARRE' in c), None)
+    nom_col = next((c for c in df.columns if c.startswith('NOM')), None)
+    plat_col = next((c for c in df.columns if 'PLAT' in c), None)
+    date_col = next((c for c in df.columns if 'POINTAGE' in c), None)
+    if date_col is None:
+        date_col = next((c for c in df.columns if 'DATE' in c), None)
+    if date_col is None:
+        raise ValueError("Colonne « Date de pointage » introuvable")
+    if ccms_col is None and code_col is None:
+        raise ValueError("Colonnes « Numéro CCMS » / « Code barre » introuvables")
+    events = []
+    for _, row in df.iterrows():
+        ccms = clean_id(row.get(ccms_col)) if ccms_col else ''
+        code = clean_id(row.get(code_col)) if code_col else ''
+        if not ccms and not code: continue
+        nom = str(row.get(nom_col) or '').strip() if nom_col else ''
+        plat = (clean_menu_label(row.get(plat_col)) or '') if plat_col else ''
+        dts = _extract_datetimes(row.get(date_col))
+        for dt in dts:
+            events.append({'Paid ID': ccms or code, 'Code barre': code, 'Nom du PAX': nom,
+                           'Plat': plat, 'Date': dt.date().isoformat(), 'Heure': dt.strftime('%H:%M:%S')})
+    if not events:
+        raise ValueError("Aucune consommation exploitable (dates illisibles ?)")
+    return pd.DataFrame(events)
+
+def store_consommations(cons_df):
+    """Stocke par semaine déduite des dates du fichier (indépendante de l'année courante)."""
+    per_week = {}
+    for d in sorted(set(cons_df['Date'].astype(str))):
+        try:
+            y, m, dd = (int(x) for x in d.split('-'))
+            per_week.setdefault(f"S{datetime.date(y, m, dd).isocalendar().week:02d}", []).append(d)
+        except Exception: pass
+    stored = {}
+    for wk, dates in per_week.items():
+        sub = cons_df[cons_df['Date'].astype(str).isin(dates)].reset_index(drop=True)
+        STATE.setdefault('consommations', {})[wk] = sub
+        stored[wk] = int(len(sub))
+    return stored
+
+def cons_index(week):
+    """Index {clé_id -> {date_iso -> {'n': nb_scans, 'plats': [...]}}} pour une semaine."""
+    df = STATE.get('consommations', {}).get(week)
+    idx = {}
+    if not isinstance(df, pd.DataFrame) or df.empty or 'Date' not in df.columns: return idx
+    cols = [c for c in ('Paid ID', 'Code barre') if c in df.columns]
+    for _, r in df.iterrows():
+        keys = set()
+        for c in cols: keys |= cons_match_keys(r.get(c))
+        d = str(r.get('Date') or '')
+        if not d or not keys: continue
+        plat = str(r.get('Plat') or '').strip()
+        for k in keys:
+            e = idx.setdefault(k, {})
+            if d not in e: e[d] = {'n': 0, 'plats': []}
+            e[d]['n'] += 1
+            if plat and plat not in e[d]['plats']: e[d]['plats'].append(plat)
+    return idx
+
+def make_cons_resolver(cons_idx):
+    """Fonction (paid_id, date_iso) -> {'n':..,'plats':[..]} ou None. Correspondance exacte puis difflib (≥0.85)."""
+    cache = {}
+    all_keys = list(cons_idx.keys())
+    def resolve(paid, date_iso):
+        if not cons_idx or not date_iso: return None
+        key = (clean_id(paid), str(date_iso))
+        if key in cache: return cache[key]
+        res = None
+        for k in cons_match_keys(paid):
+            e = cons_idx.get(k)
+            if e and date_iso in e: res = e[date_iso]; break
+        if res is None:
+            s = re.sub(r"[\s\-_.]", "", clean_id(paid))
+            if len(s) >= 4:
+                close = difflib.get_close_matches(s, all_keys, n=1, cutoff=0.85)
+                if close:
+                    e = cons_idx.get(close[0])
+                    if e and date_iso in e: res = e[date_iso]
+        cache[key] = res
+        return res
+    return resolve
+
+def cons_week_dates(week):
+    """Dates réelles de la semaine : déduites des consommations importées (fiable même si année ≠ année courante)."""
+    df = STATE.get('consommations', {}).get(week)
+    if isinstance(df, pd.DataFrame) and not df.empty and 'Date' in df.columns:
+        out = {}
+        for d in sorted(set(df['Date'].astype(str))):
+            try:
+                y, m, dd = (int(x) for x in d.split('-'))
+                out[JOURS[datetime.date(y, m, dd).weekday()]] = d
+            except Exception: pass
+        if out: return out
+    return derive_week_dates(week)
+
 # ================= CONSTRUCTEURS =================
 def _apply_filters(pl):
     out = pl.copy()
@@ -725,7 +853,7 @@ def build_slots_peaks(pl):
         peaks = pd.DataFrame(columns=['Projet'] + JOURS)
     return slots, peaks
 
-def build_conf(pl, cmd):
+def build_conf(pl, cmd, cons_resolve=None, week_dates=None):
     pl = pl.copy(); cmd = cmd.copy()
     pl['Paid ID'] = pl['Paid ID'].apply(clean_id)
     cmd['Paid ID'] = cmd['Paid ID'].apply(clean_id)
@@ -747,23 +875,32 @@ def build_conf(pl, cmd):
                 planning_str = "hors planning" if j in row and not pd.isna(row[j]) and str(row[j]).strip() not in ['*', ''] else ""
             cmd_str = row[j] if j in row and not pd.isna(row[j]) else ""
             if str(cmd_str).strip() in ['*', '']: cmd_str = ""
+            cons_str = ''
+            if cons_resolve is not None and week_dates:
+                info = cons_resolve(row['Paid ID'], week_dates.get(j))
+                if info: cons_str = str(info['n'])
             display_row[f'{j} - Planning'] = planning_str
             display_row[f'{j} - Commande'] = cmd_str
+            display_row[f'{j} - Consommé'] = cons_str
         display_rows.append(display_row)
     return pd.DataFrame(display_rows)
 
-def build_anomalies(conf):
+def build_anomalies(conf, week=None):
     anomalies = []
     for _, row in conf.iterrows():
         for j in JOURS:
-            plan_val = str(row[f'{j} - Planning']).strip(); cmd_val = str(row[f'{j} - Commande']).strip()
+            plan_val = str(row[f'{j} - Planning']).strip()
+            cmd_val = str(row[f'{j} - Commande']).strip()
+            cons_val = str(row.get(f'{j} - Consommé', '') or '').strip()
             absence = is_absence_command(cmd_val)
+            base = {'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j}
             if plan_val == "Planifié" and (cmd_val == "" or absence):
-                anomalies.append({'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j,
-                                  "Type de constat": "Planifié sans commande", 'Commande': cmd_val if cmd_val else "Aucune"})
+                anomalies.append({**base, "Type de constat": "Planifié sans commande",
+                                  'Commande': cmd_val if cmd_val else "Aucune"})
+            elif plan_val == "Planifié" and cmd_val != "" and not absence and cons_val == "":
+                anomalies.append({**base, "Type de constat": "Planifié non consommé", 'Commande': cmd_val})
             elif plan_val != "Planifié" and cmd_val != "" and not absence:
-                anomalies.append({'Paid ID': row['Paid ID'], 'Nom': row['Nom'], 'Projet': row['Projet'], 'Jour': j,
-                                  "Type de constat": "Non planifié avec commande", 'Commande': cmd_val})
+                anomalies.append({**base, "Type de constat": "Non planifié avec commande", 'Commande': cmd_val})
     return pd.DataFrame(anomalies)
 
 def excel_bytes(df, sheet='Data', index=False):
@@ -913,11 +1050,31 @@ def api_import():
             warnings.append("Liste Actif : colonnes Employee ID / Previous Payroll ID introuvables.")
         elif ref is not None:
             STATE['reference'] = ref
+    cons_f = request.files.get('consommation')
+    if cons_f:
+        try:
+            stored = store_consommations(parse_consommation(cons_f.read()))
+            warnings.append("Consommations importées : " +
+                            ", ".join(f"{k} ({v} scans)" for k, v in sorted(stored.items())))
+        except Exception as e:
+            warnings.append(f"Consommations illisibles : {e}")
     STATE['current_week'] = week
     save_state()
     cmd = STATE['commandes'].get(week)
     return {'ok': True, 'week': week, 'n_planifiees': len(planning_df),
             'n_commandes': (len(cmd) if cmd is not None else 0), 'warnings': warnings}
+
+@app.post('/api/import_consommation')
+@admin_required
+def api_import_consommation():
+    f = request.files.get('consommation')
+    if not f: return jsonify({'error': "Aucun fichier consommations fourni"}), 400
+    try:
+        stored = store_consommations(parse_consommation(f.read()))
+    except Exception as e:
+        return jsonify({'error': f"Consommations illisibles : {e}"}), 400
+    save_state()
+    return {'ok': True, 'weeks': stored}
 
 @app.post('/api/select_week')
 @login_required
@@ -932,6 +1089,7 @@ def api_select_week():
 def api_delete_week():
     w = (request.json or {}).get('week')
     STATE['plannings'].pop(w, None); STATE['commandes'].pop(w, None); STATE['calculs'].pop(w, None)
+    STATE.get('consommations', {}).pop(w, None)
     for d in derive_week_dates(w).values():
         STATE.get('synth_edits', {}).pop(d.isoformat(), None)
         STATE.get('menu_edits', {}).pop(d.isoformat(), None)
@@ -1094,10 +1252,10 @@ def api_page5():
         week, pl, cmd = current_data()
         if pl is None: return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
         if cmd is None: return jsonify({'error': "Importez le fichier Commandes dans la barre latérale."}), 400
-        conf = build_conf(pl, cmd)
+        resolve = make_cons_resolver(cons_index(week))
+        conf = build_conf(pl, cmd, resolve, cons_week_dates(week))
         p = df_payload(conf)
-        if is_admin():
-            store_result(week, 'conf', p)
+        if is_admin(): store_result(week, 'conf', p)
         return p
     except Exception as e:
         app.logger.exception("api_page5")
@@ -1246,13 +1404,18 @@ def api_export_recap():
 @app.post('/api/page7')
 @login_required
 def api_page7():
-    wk = STATE.get('current_week')
-    conf = get_result(wk, 'conf')
-    if conf is None: return jsonify({'error': "Générez d'abord la confrontation (onglet 5)."}), 400
-    p = df_payload(build_anomalies(pd.DataFrame(conf['rows'])))
-    if is_admin():
-        store_result(wk, 'constat', p)
-    return p
+    try:
+        week, pl, cmd = current_data()
+        if pl is None: return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
+        resolve = make_cons_resolver(cons_index(week))
+        conf = build_conf(pl, cmd, resolve, cons_week_dates(week))
+        anom = build_anomalies(conf, week)
+        p = df_payload(anom)
+        if is_admin(): store_result(week, 'constat', p)
+        return p
+    except Exception as e:
+        app.logger.exception("api_page7")
+        return jsonify({'error': f"Extraction des constats impossible : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_anom')
 @login_required
