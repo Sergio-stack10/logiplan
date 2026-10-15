@@ -37,6 +37,9 @@
     <label>Fichier Commandes (optionnel)</label>
     <input type="file" id="inp-commande" accept=".xlsx">
     <label>Fichier Liste Actif (optionnel)</label>
+    <label>Fichier Consommations (optionnel)</label>
+    <input type="file" id="inp-consommation" accept=".xlsx,.xls">
+    <button class="btn" id="btn-import-cons" style="width:100%">🍽️ Importer les consommations seules</button>
     <input type="file" id="inp-reference" accept=".xlsx">
     <label>Nom de la semaine</label>
     <input type="text" id="inp-week" placeholder="Ex : S38 (auto si vide)">
@@ -132,6 +135,7 @@
       <div class="toolbar">
         <button class="btn primary admin-only" id="btn-p7">📋 Extraire les constats</button>
         <button class="btn accent" id="btn-exp-p7">📥 Excel</button>
+        <select id="f7-type"><option value="">Type de constat : tous</option></select>
         <input type="text" id="f7-search" placeholder="🔍 Rechercher…">
       </div>
       <div id="out-p7"><div class="hint">Aucun constat généré pour cette semaine.</div></div>
