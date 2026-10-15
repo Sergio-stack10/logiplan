@@ -37,10 +37,10 @@
     <label>Fichier Commandes (optionnel)</label>
     <input type="file" id="inp-commande" accept=".xlsx">
     <label>Fichier Liste Actif (optionnel)</label>
-    <label>Fichier Consommations (optionnel)</label>
-    <input type="file" id="inp-consommation" accept=".xlsx,.xls">
-    <button class="btn" id="btn-import-cons" style="width:100%">🍽️ Importer les consommations seules</button>
     <input type="file" id="inp-reference" accept=".xlsx">
+    <label class="admin-only">Fichier Consommations (optionnel)</label>
+    <input type="file" id="inp-consommation" class="admin-only" accept=".xlsx,.xls">
+    <button class="btn admin-only" id="btn-import-cons" style="width:100%">🍽️ Importer les consommations seules</button>
     <label>Nom de la semaine</label>
     <input type="text" id="inp-week" placeholder="Ex : S38 (auto si vide)">
     <button class="btn primary" id="btn-import">🚀 Lancer l'import et le regroupement</button>
@@ -191,32 +191,31 @@
   </section>
 
   <section id="p9" class="panel">
-  <h2 class="page-title">📊 Dashboard — QS · Non consommé · Montant</h2>
-  <div class="card">
-    <div class="toolbar">
-      <select id="db-period">
-        <option value="journalier">📅 Vue journalière</option>
-        <option value="hebdo">🗓️ Vue hebdomadaire</option>
-        <option value="mensuel">📆 Vue mensuelle</option>
-      </select>
-      <input type="month" id="db-month" title="Filtrer par mois">
-      <select id="db-week"><option value="">Semaine : toutes</option></select>
-      <button class="btn primary" id="btn-db">🔄 Actualiser</button>
-      <button class="btn accent" id="btn-exp-db">📥 Excel</button>
+    <h2 class="page-title">📊 Dashboard — QS · Non consommé · Montant</h2>
+    <div class="card">
+      <div class="toolbar">
+        <select id="db-period">
+          <option value="journalier">📅 Vue journalière</option>
+          <option value="hebdo">🗓️ Vue hebdomadaire</option>
+          <option value="mensuel">📆 Vue mensuelle</option>
+        </select>
+        <input type="month" id="db-month" title="Filtrer par mois">
+        <select id="db-week"><option value="">Semaine : toutes</option></select>
+        <button class="btn primary" id="btn-db">🔄 Actualiser</button>
+        <button class="btn accent" id="btn-exp-db">📥 Excel</button>
+      </div>
+      <div class="count" id="db-count"></div>
+      <div class="metrics" id="db-kpis"></div>
+      <div id="out-db"><div class="hint">Cliquez sur Actualiser pour afficher les graphiques.</div></div>
     </div>
-    <div class="count" id="db-count"></div>
-    <div class="metrics" id="db-kpis"></div>
-    <div id="out-db"><div class="hint">Cliquez sur Actualiser pour afficher les graphiques.</div></div>
-  </div>
-</section>
+  </section>
 </main>
 </div>
 
-<footer class="footer-fix">Developped by <span>TEAM TMM 🦄</span></footer>
+<footer class="footer-fix">Developped by <span>RAVO SERGIO</span></footer>
 <div id="toasts"></div>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
-<script src="/static/app.js?v=6"></script>
-<script src="/static/dashboard.js?v=3"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>
