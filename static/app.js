@@ -7,7 +7,7 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function on(sel, evt, fn){ const el = typeof sel === 'string' ? document.querySelector(sel) : sel; if (el) el.addEventListener(evt, fn); }
 
-/* ---------- Toast ---------- */
+/* ================= TOAST ================= */
 function toast(text, type='ok'){
   try {
     const box = document.getElementById('toasts');
@@ -18,7 +18,7 @@ function toast(text, type='ok'){
   } catch(e){ console.error(text); }
 }
 
-/* ---------- Overlay de chargement (watchdog) ---------- */
+/* ================= OVERLAY DE CHARGEMENT (watchdog) ================= */
 let pendingReqs = 0, loadingTimer = null, loadingWatchdog = null;
 function showLoadingOverlay(label){
   let ov = document.getElementById('loading-overlay');
@@ -144,7 +144,7 @@ const MULTI_IDS = ['f1-transport','f1-projet','f1-statut','f2-projet','f2-statut
                    'f3-transport','f3-projet','f3-statut','f4-projet','f4-statut'];
 function fillSelect(sel, values){ msFill((typeof sel === 'string') ? sel : sel.id, values || []); }
 
-/* ---------- Helpers ---------- */
+/* ================= HELPERS TABLEAUX ================= */
 function orderedRows(rows, order){
   if (!rows || !rows.length) return rows;
   const known = new Set(order);
@@ -208,8 +208,8 @@ function computeJoursDate(week){
 
 /* ================= RÔLE ================= */
 const ADMIN_CONTROL_IDS = [
-  'btn-import','inp-planning','inp-commande','inp-reference','inp-week','inp-taux',
-  'btn-del-week','btn-p2','btn-p3','btn-p4','btn-p5','btn-p6','btn-p7','btn-exp-p2','btn-matr'
+  'btn-import','inp-planning','inp-commande','inp-consommation','inp-reference','inp-week','inp-taux',
+  'btn-del-week','btn-import-cons','btn-p2','btn-p3','btn-p4','btn-p5','btn-p6','btn-p7','btn-exp-p2','btn-matr'
 ];
 function applyRoleUI(){
   const viewer = (ROLE === 'viewer');
@@ -226,13 +226,13 @@ function applyRoleUI(){
   ['#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
 
-/* ---------- Déconnexion ---------- */
+/* ================= DÉCONNEXION ================= */
 on('#btn-logout', 'click', async () => {
   try { await api('/api/logout', {method:'POST', silent:true}); } catch(e){}
   window.location.href = '/logout';
 });
 
-/* ---------- IndexedDB ---------- */
+/* ================= INDEXEDDB (backup local) ================= */
 function idbOpen(){ return new Promise((res, rej) => {
   const r = indexedDB.open('logiplan', 1);
   r.onupgradeneeded = () => r.result.createObjectStore('kv');
@@ -263,7 +263,7 @@ async function restoreIfEmpty(){
   } catch(e){}
 }
 
-/* ---------- Sidebar ---------- */
+/* ================= SIDEBAR & IMPORTS ================= */
 on('#btn-side', 'click', () => document.body.classList.toggle('side-hidden'));
 on('#inp-taux', 'input', e => { $('#taux-val').textContent = e.target.value + '%'; });
 
@@ -273,6 +273,7 @@ on('#btn-import', 'click', async () => {
   for (const f of $('#inp-planning').files) fd.append('planning', f);
   if ($('#inp-commande').files[0]) fd.append('commande', $('#inp-commande').files[0]);
   if ($('#inp-reference').files[0]) fd.append('reference', $('#inp-reference').files[0]);
+  if ($('#inp-consommation') && $('#inp-consommation').files[0]) fd.append('consommation', $('#inp-consommation').files[0]);
   const w = $('#inp-week').value.trim(); if (w) fd.append('week', w);
   busy($('#btn-import'), true, 'Import…');
   try {
@@ -289,6 +290,21 @@ on('#btn-import', 'click', async () => {
   busy($('#btn-import'), false);
 });
 
+/* Import des consommations seules (nouveau) */
+on('#btn-import-cons', 'click', async () => {
+  if (!$('#inp-consommation') || !$('#inp-consommation').files.length) return toast('Choisissez le fichier Consommations.', 'err');
+  const fd = new FormData();
+  fd.append('consommation', $('#inp-consommation').files[0]);
+  busy($('#btn-import-cons'), true, 'Import…');
+  try {
+    const res = await api('/api/import_consommation', {method:'POST', body: fd});
+    const w = Object.entries(res.weeks || {}).map(([k, v]) => `${k} (${v} scans)`).join(', ') || '—';
+    toast('✅ Consommations importées : ' + esc(w));
+    await saveBackup();
+  } catch(e){ toast(esc(e.message), 'err'); }
+  busy($('#btn-import-cons'), false);
+});
+
 on('#sel-week', 'change', async e => {
   await api('/api/select_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: e.target.value})});
   p1Cache.week = undefined;
@@ -300,7 +316,7 @@ on('#btn-del-week', 'click', async () => {
   await api('/api/delete_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: $('#sel-week').value})});
   p1Cache.week = undefined;
   ['out-p2','out-p3','out-p4','out-p5','out-p6','out-p8'].forEach(id => { const el = $('#'+id); if (el) el.innerHTML = ''; });
-  p5Rows = null; p7Rows = null; lastRecapData = null; lastSynData = null;
+  p5Rows = null; p7Rows = null; lastRecapData = null; lastSynData = null; lastSynRenderRows = null;
   await refreshState(); await loadP1(); await saveBackup();
   toast('Semaine supprimée');
 });
@@ -324,7 +340,7 @@ async function refreshState(){
   }
 }
 
-/* ---------- Onglets ---------- */
+/* ================= ONGLETS ================= */
  $$('.tab').forEach(b => b.addEventListener('click', async () => {
   $$('.tab').forEach(x => x.classList.remove('active'));
   $$('.panel').forEach(x => x.classList.remove('active'));
@@ -332,7 +348,11 @@ async function refreshState(){
   window.scrollTo({top:0});
   if (b.dataset.tab === 'p1') await loadP1();
   if (b.dataset.tab === 'p6'){ await loadPrefixes(); const r = await getResult('recap'); if (r) renderRecap(r); }
-  if (b.dataset.tab === 'p7'){ const c = await getResult('conf'); if (c){ p5Rows = c.rows; } const a = await getResult('constat'); if (a){ p7Rows = a.rows; renderP7(); } }
+  if (b.dataset.tab === 'p7'){
+    const c = await getResult('conf'); if (c){ p5Rows = c.rows; }
+    const a = await getResult('constat');
+    if (a){ p7Rows = a.rows; const sel = $('#f7-type'); if (sel) sel.innerHTML = '<option value="">Type de constat : tous</option>'; renderP7(); }
+  }
   if (b.dataset.tab === 'p8'){ const s8 = await getResult('synthese'); if (s8) renderSynthese(s8); }
 }));
 
@@ -363,7 +383,7 @@ async function autoLoadAll(){
   } catch(e){}
 }
 
-/* ---------- PAGE 1 ---------- */
+/* ================= PAGE 1 ================= */
 let p1Cache = {week: undefined, rows: [], options: {}, total: 0};
 async function loadP1(){
   try {
@@ -432,7 +452,7 @@ on('#btn-exp-p1', 'click', () => {
   window.open('/api/export_page1?' + p, '_blank');
 });
 
-/* ---------- PAGE 2 ---------- */
+/* ================= PAGE 2 ================= */
 if ($('#p2-presta'))
   $('#p2-presta').innerHTML = JOURS.map(j => `<label>${esc(dayLabel(j))}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
 function applyPrestaValues(p2){
@@ -443,7 +463,6 @@ function applyPrestaValues(p2){
   });
   return true;
 }
-
 on('#btn-p2', 'click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
   try {
@@ -468,7 +487,7 @@ on('#btn-exp-p2', 'click', () => {
   window.open('/api/export_page2?' + p, '_blank');
 });
 
-/* ---------- PAGE 3 ---------- */
+/* ================= PAGE 3 ================= */
 on('#btn-p3', 'click', async () => {
   busy($('#btn-p3'), true, 'Calcul…');
   try {
@@ -492,7 +511,7 @@ on('#btn-exp-p3', 'click', () => {
   window.open('/api/export_page3?' + p, '_blank');
 });
 
-/* ---------- PAGE 4 ---------- */
+/* ================= PAGE 4 ================= */
 on('#btn-p4', 'click', async () => {
   busy($('#btn-p4'), true, 'Calcul…');
   try {
@@ -514,28 +533,30 @@ on('#btn-exp-p4', 'click', () => {
   window.open('/api/export_page4?' + p, '_blank');
 });
 
-/* ---------- PAGE 5 ---------- */
+/* ================= PAGE 5 : Confrontation (avec Consommé) ================= */
 let p5Rows = null;
 function confTable(rows){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée.</div>';
   const base = ['Workday ID','Paid ID','Nom','Projet','Statut'];
   let h = '<div class="tscroll"><table class="data conf"><thead>';
   h += '<tr class="grp-row"><th colspan="5">👤 Identité</th>';
-  JOURS.forEach(j => h += `<th colspan="2">${esc(dayLabel(j))}</th>`);
+  JOURS.forEach(j => h += `<th colspan="3">${esc(dayLabel(j))}</th>`);
   h += '</tr><tr class="cols-row">';
   base.forEach(c => h += `<th>${esc(c)}</th>`);
-  JOURS.forEach(() => h += '<th>Planning</th><th>Commande</th>');
+  JOURS.forEach(() => h += '<th>Planning</th><th>Commande</th><th>Consommé</th>');
   h += '</tr></thead><tbody>';
   rows.forEach(r => {
     h += '<tr>' + base.map(c => `<td title="${esc(r[c])}">${esc(r[c])}</td>`).join('');
     JOURS.forEach(j => {
       const pl = String(r[j + ' - Planning'] ?? '');
       const cm = String(r[j + ' - Commande'] ?? '');
+      const cs = String(r[j + ' - Consommé'] ?? '');
       const plCell = pl === 'Planifié' ? '<span class="badge b-ok">Planifié</span>'
         : pl === 'hors planning' ? '<span class="badge b-warn">hors planning</span>'
         : pl ? `<span class="badge b-info">${esc(pl)}</span>` : '';
       const cmCell = cm ? (/JE NE SERAI PAS/i.test(cm) ? '<span class="badge b-abs">Je ne serai pas présent</span>' : `<span title="${esc(cm)}">${esc(cm)}</span>`) : '';
-      h += `<td>${plCell}</td><td>${cmCell}</td>`;
+      const csCell = cs !== '' ? `<span class="badge b-ok" title="Repas pointés ce jour (fichier consommations)">${esc(cs)}</span>` : '';
+      h += `<td>${plCell}</td><td>${cmCell}</td><td>${csCell}</td>`;
     });
     h += '</tr>';
   });
@@ -554,7 +575,7 @@ on('#btn-p5', 'click', async () => {
 on('#f5-search', 'input', debounce(renderP5, 250));
 on('#btn-exp-p5', 'click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
 
-/* ---------- PAGE 6 : Commandes par menu ---------- */
+/* ================= PAGE 6 : Commandes par menu ================= */
 const tauxByDay = Object.fromEntries(JOURS.map(j => [j, parseFloat($('#inp-taux') ? $('#inp-taux').value : 0) || 0]));
 on('#inp-taux', 'input', e => {
   JOURS.forEach(j => tauxByDay[j] = parseFloat(e.target.value) || 0);
@@ -768,19 +789,29 @@ tr.sanschoix td{font-weight:700}
 @page{margin:12mm}</style></head><body>${h}</body></html>`);
 });
 
-/* ---------- PAGE 7 : Constats ---------- */
+/* ================= PAGE 7 : Constats (avec filtre par type) ================= */
 let p7Rows = null;
 function renderP7(){
   if (p7Rows === null) return;
-  const rows = orderedRows(searchRows(p7Rows, $('#f7-search').value),
-    ['Paid ID','Nom','Projet','Jour','Type de constat','Commande']);
+  const sel = $('#f7-type');
+  if (sel && sel.options.length <= 1){
+    const types = [...new Set(p7Rows.map(r => String(r['Type de constat'] ?? '')).filter(Boolean))].sort();
+    sel.innerHTML = '<option value="">Type de constat : tous</option>' +
+      types.map(t => `<option>${esc(t)}</option>`).join('');
+  }
+  const tsel = sel ? sel.value : '';
+  let rows = searchRows(p7Rows, $('#f7-search').value);
+  if (tsel) rows = rows.filter(r => String(r['Type de constat'] ?? '') === tsel);
+  rows = orderedRows(rows, ['Paid ID','Nom','Projet','Jour','Type de constat','Commande']);
   $('#out-p7').innerHTML = rows.length ? tableHTML(rows) : '<div class="msg ok">✅ Aucun constat.</div>';
 }
+on('#f7-type', 'change', renderP7);
 on('#btn-p7', 'click', async () => {
   if (ROLE === 'viewer'){ toast("Action réservée à l'administrateur", 'warn'); return; }
   busy($('#btn-p7'), true, 'Extraction…');
   try {
     p7Rows = (await api('/api/page7', {method:'POST'})).rows;
+    const sel = $('#f7-type'); if (sel) sel.innerHTML = '<option value="">Type de constat : tous</option>';
     renderP7(); await saveBackup();
     toast(p7Rows.length ? p7Rows.length + ' constat(s) détecté(s)' : 'Aucun constat 🎉', p7Rows.length ? 'warn' : 'ok');
   } catch(e){ toast(esc(e.message), 'err'); $('#out-p7').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; }
@@ -804,7 +835,7 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ---------- PAGE 8 : Synthèse (filtres Excel + sous-totaux + resize) ---------- */
+/* ================= PAGE 8 : Synthèse (filtres Excel + sous-totaux + resize) ================= */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
@@ -812,6 +843,7 @@ const SYN_EDITABLE = {'Commande finale':'commande_finale', 'Consommé':'consomme
 const SYN_WKEY = 'logiplan_syn_widths';
 let synEdits = {};
 let lastSynData = null;
+let lastSynRenderRows = null;
 let synColFilters = {};
 
 function synthBody(){
@@ -1004,132 +1036,265 @@ function renderSynthese(d){
   h += SYN_COLS.map(c => {
     const active = !!synColFilters[c];
     return `<th data-col="${esc(c)}"><span class="th-label">${esc(c)}</span>` +
-           `<button type="button" class="th-filter${active ? ' active' : ''}" data-fcol="${esc(c)}" title="Filtrer cette colonne">${active ? '🔻' : '▾'}</button></th>`;
+           `<button type="button" class="th-filter${active ? ' active' : ''}" data-col="${esc(c)}" title="Filtrer la colonne">▽</button></th>`;
   }).join('');
   h += '</tr></thead><tbody>';
   body.forEach(r => {
-    const dLbl = String(r['Date'] ?? '').toUpperCase();
-    const isTotal = dLbl.startsWith('TOTAL');
-    const isSub = dLbl.startsWith('SOUS-TOTAL');
-    h += `<tr class="${isTotal ? 'total' : (isSub ? 'subtotal' : '')}">`;
+    const lab = String(r['Date'] ?? '');
+    const isSub = lab.startsWith('Sous-total');
+    const isTot = lab.toUpperCase().startsWith('TOTAL');
+    const cls = isSub ? 'subtotal' : (isTot ? 'total' : '');
+    h += `<tr class="${cls}">`;
     SYN_COLS.forEach(c => {
-      if (!isTotal && !isSub && SYN_EDITABLE[c] && ROLE === 'admin'){
-        h += `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(r.DateIso)}" data-champ="${SYN_EDITABLE[c]}" value="${r[c] ?? 0}"></td>`;
-      } else if (c === 'QS (%)'){
-        h += `<td class="${qsClass(r[c])}">${fmtPct(r[c])}</td>`;
-      } else if (c.includes('(%)')){
-        h += `<td>${fmtPct(r[c])}</td>`;
-      } else if (c === 'MONTANT DA MGA HT'){
-        h += `<td style="text-align:right;font-weight:600">${Number(r[c] ?? 0).toLocaleString('fr-FR')}</td>`;
+      if (ROLE === 'admin' && !isSub && !isTot && SYN_EDITABLE[c]){
+        const di = String(r['DateIso'] ?? '');
+        const edited = (synEdits[di] || {})[SYN_EDITABLE[c]];
+        const cur = (edited === undefined || edited === null) ? (r[c] ?? '') : edited;
+        h += `<td class="editcell"><input type="number" min="0" step="1" data-date="${esc(di)}" data-field="${esc(SYN_EDITABLE[c])}" value="${esc(cur)}"></td>`;
       } else {
-        h += `<td>${esc(r[c])}</td>`;
+        let v = r[c];
+        if (c.includes('(%)')) v = fmtPct(v);
+        const qc = (c === 'QS (%)' || c === 'QS conso vs commandé final (%)') ? ` class="${qsClass(Number(r[c] ?? 0))}"` : '';
+        h += `<td${qc} title="${esc(v)}">${esc(v)}</td>`;
       }
     });
     h += '</tr>';
   });
   h += '</tbody></table></div>';
-  if (filtered) h += '<div class="toolbar"><button class="btn" id="syn-f-reset">✖ Effacer tous les filtres</button></div>';
   $('#out-p8').innerHTML = h;
-
+  lastSynRenderRows = body;
   const table = $('#syn-table');
-  applySynWidths(table);
-  enableSynResize(table);
-  table.querySelectorAll('.th-filter').forEach(btn =>
-    btn.addEventListener('click', ev => {
-      ev.preventDefault(); ev.stopPropagation();
-      openSynPopover(btn.dataset.fcol, btn.closest('th'));
-    }));
-  const fr = $('#syn-f-reset');
-  if (fr) fr.addEventListener('click', () => { synColFilters = {}; renderSynthese(lastSynData); });
-  $$('#out-p8 .editcell input').forEach(inp => inp.addEventListener('change', () => {
-    const diso = inp.dataset.date, champ = inp.dataset.champ;
-    synEdits[diso] = synEdits[diso] || {};
-    synEdits[diso][champ] = parseInt(inp.value) || 0;
-    updatePendingCount();
-  }));
-  // Coloration QS (lue depuis le HTML rendu — fonctionne pour données, sous-totaux et TOTAL)
-  $$('#out-p8 tbody tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td');
-    SYN_COLS.forEach((c, i) => {
-      if (c === 'QS (%)' && cells[i]){
-        const n = parseFloat(cells[i].textContent.replace('%','').replace(',','.'));
-        cells[i].classList.remove('qs-red','qs-orange','qs-green');
-        const cls = qsClass(n);
-        if (cls) cells[i].classList.add(cls);
-      }
-    });
-  });
-}
-function updatePendingCount(){
-  const btn = $('#btn-p8');
-  if (!btn || ROLE !== 'admin') return;
-  const nCells = Object.values(synEdits).reduce((s, o) => s + Object.keys(o).length, 0);
-  const puDirty = numVal('inp-pu') !== (lastSynData ? lastSynData.pu : 0);
-  const n = nCells + (puDirty ? 1 : 0);
-  if (n > 0){
-    btn.innerHTML = `🧾 Calculer (${n} modif${n > 1 ? 's' : ''})`;
-    btn.classList.add('pending');
-  } else {
-    btn.innerHTML = '🧾 Générer';
-    btn.classList.remove('pending');
+  if (table){
+    applySynWidths(table);
+    enableSynResize(table);
+    table.querySelectorAll('.th-filter').forEach(btn =>
+      btn.addEventListener('click', e => { e.stopPropagation(); openSynPopover(btn.dataset.col, btn.closest('th')); }));
+    table.querySelectorAll('.editcell input').forEach(inp =>
+      inp.addEventListener('change', () => {
+        const di = inp.dataset.date, f = inp.dataset.field;
+        if (!di || !f) return;
+        (synEdits[di] = synEdits[di] || {})[f] = parseFloat(inp.value) || 0;
+        const b8 = $('#btn-p8'); if (b8) b8.classList.add('pending');
+      }));
   }
 }
-async function genSynthese(showToast = true){
-  busy($('#btn-p8'), true, 'Calcul…');
+
+async function calcP8(){
+  if (ROLE === 'viewer'){ toast("Action réservée à l'administrateur", 'warn'); return; }
+  const b = $('#btn-p8');
+  busy(b, true, 'Génération…');
+  if (b) b.classList.remove('pending');
   try {
-    renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(synthBody()), silent: !showToast}));
-    synEdits = {};
-    updatePendingCount();
-    if (showToast) toast('Synthèse générée ✅');
-  } catch(e){ $('#out-p8').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`; if (showToast) toast(esc(e.message), 'err'); }
-  busy($('#btn-p8'), false);
+    const d = await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())});
+    renderSynthese(d); await saveBackup();
+  } catch(e){ toast(esc(e.message), 'err'); }
+  busy(b, false);
 }
-on('#btn-p8', 'click', () => genSynthese());
-on('#inp-month', 'change', () => genSynthese());
-on('#inp-pu', 'change', () => updatePendingCount());
+on('#btn-p8', 'click', calcP8);
+on('#inp-month', 'change', () => { if (lastSynData) calcP8(); });
+on('#inp-pu', 'change', async () => {
+  if (ROLE !== 'admin') return;
+  try {
+    await api('/api/pu', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({pu: numVal('inp-pu')})});
+    if (lastSynData) await calcP8();
+  } catch(e){ toast(esc(e.message), 'err'); }
+});
 on('#btn-exp-p8', 'click', async () => {
   try { await downloadPost('/api/export_synthese', 'synthese_mensuelle.xlsx', synthBody()); }
   catch(e){ toast(esc(e.message), 'err'); }
 });
 on('#btn-pdf-p8', 'click', () => {
-  if (!lastSynData){ toast("Aucune synthèse générée pour cette semaine.", 'warn'); return; }
-  const d = lastSynData;
-  let h = `<h1>LogiPlan — Synthèse mensuelle · ${esc(d.month || '')}</h1>
-    <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')} · Prix unitaire : ${Number(d.pu).toLocaleString('fr-FR')} MGA HT</p>`;
-  h += pdfSimpleTable(d.rows, SYN_COLS);
-  printIframe(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Synthèse</title><style>
-body{font-family:'Segoe UI',Arial,sans-serif;padding:14px;font-size:10px;color:#22333f}
-h1{color:#003D5B;font-size:15px;border-bottom:3px solid #25E2CC;padding-bottom:5px;margin:0 0 4px}
-.gen{color:#789;font-size:9px;margin:0 0 8px}
-table{border-collapse:collapse;width:100%}
-th{background:#003D5B;color:#fff;padding:3px 4px;font-size:8.5px;text-align:left}
-td{border:1px solid #dde5ec;padding:2px 4px}
+  if (!lastSynRenderRows || !lastSynRenderRows.length){ toast("Aucune synthèse générée pour ce mois.", 'warn'); return; }
+  const d = lastSynData || {};
+  let h = `<h1>LogiPlan — Synthèse mensuelle${d.month ? ' · ' + esc(d.month) : ''}</h1>
+           <p class="gen">Édité le ${new Date().toLocaleDateString('fr-FR')}</p>`;
+  h += pdfSimpleTable(lastSynRenderRows, SYN_COLS);
+  printIframe(`<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>LogiPlan</title><style>
+body{font-family:'Segoe UI',Arial,sans-serif;color:#22333f;padding:18px;font-size:12px}
+h1{color:#003D5B;font-size:18px;border-bottom:3px solid #25E2CC;padding-bottom:6px;margin:0 0 4px}
+.gen{color:#789;font-size:10px;margin:0 0 10px}
+table{border-collapse:collapse;width:100%;margin:4px 0 10px}
+th{background:#003D5B;color:#fff;padding:4px 6px;text-align:left;font-size:10px}
+td{border:1px solid #dde5ec;padding:3px 6px}
 tbody tr:nth-child(odd) td{background:#f8fbfd}
 tr.total td{font-weight:800;background:rgba(0,61,91,.12)!important;border-top:2px solid #003D5B}
-@page{size:A4 landscape;margin:10mm}</style></head><body>${h}</body></html>`);
+tr.subtotal td{font-weight:700;background:#fdf3d7!important}
+@page{margin:12mm}</style></head><body>${h}</body></html>`);
 });
 
-/* ---------- Démarrage ---------- */
-async function startApp(){
-  await restoreIfEmpty();
-  try { await refreshState(); await loadP1(); } catch(e){}
-  try { await autoLoadAll(); } catch(e){}
+/* ================= PAGE 9 : DASHBOARD (fusionné, ex-dashboard.js) ================= */
+const DB = { charts: {}, last: null };
+const fmtInt = v => new Intl.NumberFormat('fr-FR', {maximumFractionDigits: 0}).format(Number(v) || 0);
+
+console.log('[Dashboard] Chart.js:', !!window.Chart, '| DataLabels:', !!window.ChartDataLabels);
+
+function fmtCompact(v){
+  const n = Number(v) || 0, abs = Math.abs(n);
+  if (abs >= 1e6) return (n / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace('.', ',') + ' M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace('.', ',') + ' K';
+  return fmtInt(n);
 }
-(async function boot(){
-  MULTI_IDS.forEach(initMultiSelect);
+function dbQsColor(v){
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '#9db3c0';
+  if (n < 98) return '#c0392b';
+  if (n < 99) return '#e67e22';
+  if (n <= 101) return '#27ae60';
+  if (n <= 102) return '#e67e22';
+  return '#c0392b';
+}
+function dbDestroy(){ Object.values(DB.charts).forEach(c => { try { c.destroy(); } catch(e){} }); DB.charts = {}; }
+
+/* Enregistrement global du plugin étiquettes (une seule fois) */
+if (window.Chart && window.ChartDataLabels){
+  try { Chart.register(ChartDataLabels); } catch(e){ console.warn('[Dashboard] datalabels:', e.message); }
+}
+
+function dbMakeChart(id, label, labels, data, colors, yOpts, labelFmt){
   try {
-    const me = await api('/api/me');
-    console.log('[LogiPlan] Session :', me);
-    if (!me.role){
-      console.warn('[LogiPlan] Pas de session valide → connexion');
-      window.location.href = '/';
-      return;
-    }
-    ROLE = me.role; applyRoleUI();
-    await startApp();
+    const cv = document.getElementById(id);
+    if (!cv){ console.error('[Dashboard] canvas introuvable : #' + id); return; }
+    if (!window.Chart){ console.error('[Dashboard] Chart.js absent'); return; }
+    if (DB.charts[id]){ try { DB.charts[id].destroy(); } catch(e){} }
+    DB.charts[id] = new Chart(cv.getContext('2d'), {
+      type: 'bar',
+      data: { labels, datasets: [{ label, data, backgroundColor: colors, borderRadius: 6,
+                                   maxBarThickness: 52, borderWidth: 1, borderColor: 'rgba(0,0,0,.06)' }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        layout: { padding: { top: 26 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => ` ${label} : ` + (labelFmt ? labelFmt(c.parsed.y) : c.parsed.y) } },
+          datalabels: window.ChartDataLabels ? {
+            anchor: 'end', align: 'end', offset: 2, clamp: true,
+            color: '#003D5B', font: { weight: '700', size: 11 },
+            formatter: v => (v === null || v === undefined) ? '' : (labelFmt ? labelFmt(v) : String(v))
+          } : { display: false }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { maxRotation: 60, autoSkip: true } },
+          y: Object.assign({ display: false, beginAtZero: true }, yOpts || {})
+        }
+      }
+    });
+    console.log('[Dashboard] graphique créé : #' + id);
   } catch(e){
-    console.error('[LogiPlan] Boot échoué :', e);
-    window.location.href = '/';
+    console.error('[Dashboard] erreur graphique #' + id + ' :', e);
+    toast('Erreur graphique : ' + e.message, 'err');
   }
+}
+function refreshDbWeeks(weeks){
+  const sel = $('#db-week'), cur = sel.value;
+  sel.innerHTML = '<option value="">Semaine : toutes</option>' +
+    (weeks || []).map(w => `<option${w === cur ? ' selected' : ''}>${esc(w)}</option>`).join('');
+}
+function renderDashboard(d){
+  const kpis = document.getElementById('db-kpis');
+  const out = document.getElementById('out-db');
+  if (!kpis || !out){
+    toast('⚠️ Section Dashboard absente de index.html (ids db-kpis / out-db)', 'err');
+    return;
+  }
+  const k = d.kpis || {};
+  const qsTxt = (k.qs === null || k.qs === undefined) ? '—' : String(k.qs).replace('.', ',');
+  kpis.innerHTML =
+    `<div class="metric"><div class="ico i-teal">🎯</div><div class="val">${qsTxt}</div><div class="lbl">QS globale (%)</div></div>` +
+    `<div class="metric"><div class="ico i-blue">🍽️</div><div class="val">${fmtInt(k.consomme)}</div><div class="lbl">Repas consommés</div></div>` +
+    `<div class="metric"><div class="ico i-red">🗑️</div><div class="val">${fmtInt(k.non_conso)}</div><div class="lbl">Non consommé</div></div>` +
+    `<div class="metric"><div class="ico i-green">💰</div><div class="val">${fmtInt(k.montant)}</div><div class="lbl">Montant MGA HT</div></div>` +
+    `<div class="metric"><div class="ico i-navy">📅</div><div class="val">${k.nb_jours || 0}</div><div class="lbl">Jours de données</div></div>`;
+  $('#db-count').textContent =
+    `${k.nb_jours || 0} jour(s) · Semaines : ${(d.weeks_available || []).join(', ') || '—'} · Mois : ${(d.months_available || []).join(', ') || '—'}`;
+
+  const rows = d.rows || [];
+  if (!rows.length){
+    dbDestroy();
+    out.innerHTML = '<div class="msg warn">⚠️ Aucune donnée : générez d\'abord des synthèses mensuelles (onglet 🧾 Synthèse) pour alimenter le dashboard.</div>';
+    return;
+  }
+  const labels = rows.map(r => r.periode);
+  const qsData = rows.map(r => (r['QS (%)'] === null || r['QS (%)'] === undefined) ? null : Number(r['QS (%)']));
+  const ncData = rows.map(r => Number(r['Non consommé'] || 0));
+  const mtData = rows.map(r => Number(r['MONTANT DA MGA HT'] || 0));
+
+  let h = '';
+  if (!window.Chart) h += '<div class="msg err">❌ Chart.js n\'est pas chargé (vérifiez le bloc &lt;script&gt; ou votre connexion réseau).</div>';
+  else if (!window.ChartDataLabels) h += '<div class="msg warn">⚠️ Plugin étiquettes non chargé — les graphiques s\'afficheront sans étiquettes.</div>';
+  h += '<div class="chart-box"><h3 class="sub">🎯 Qualité de service — QS (%)</h3><div class="chart-wrap"><canvas id="db-c-qs"></canvas></div></div>';
+  h += '<div class="chart-box"><h3 class="sub">🗑️ Nombre de repas non consommés</h3><div class="chart-wrap"><canvas id="db-c-nc"></canvas></div></div>';
+  h += '<div class="chart-box"><h3 class="sub">💰 MONTANT DA MGA HT</h3><div class="chart-wrap"><canvas id="db-c-mt"></canvas></div></div>';
+  const tblRows = rows.map(r => ({'Période': r.periode, 'Nb jours': r.nb_jours, 'Consommé': r['Consommé'],
+    'Commande finale': r['Commande finale'], 'Non consommé': r['Non consommé'],
+    'QS (%)': r['QS (%)'], 'MONTANT DA MGA HT': r['MONTANT DA MGA HT']}));
+  h += `<details class="mt"><summary>📋 Données des graphiques</summary>${tableHTML(tblRows)}</details>`;
+  out.innerHTML = h;
+
+  if (window.Chart){
+    dbMakeChart('db-c-qs', 'QS (%)', labels, qsData, qsData.map(dbQsColor),
+      {beginAtZero: false, suggestedMin: 90, suggestedMax: 105},
+      v => String(v).replace('.', ',') + ' %');
+    dbMakeChart('db-c-nc', 'Non consommé', labels, ncData, ncData.map(() => '#e74c3c'),
+      null, v => fmtInt(v));
+    dbMakeChart('db-c-mt', 'MONTANT DA MGA HT', labels, mtData, mtData.map(() => '#003D5B'),
+      null, fmtCompact);
+  }
+}
+async function loadDashboard(){
+  const period = $('#db-period').value;
+  const params = new URLSearchParams({period});
+  if (period !== 'mensuel'){
+    if ($('#db-month').value) params.set('month', $('#db-month').value);
+    if ($('#db-week').value) params.set('week', $('#db-week').value);
+  }
+  busy($('#btn-db'), true, 'Chargement…');
+  try {
+    const d = await api('/api/dashboard?' + params);
+    DB.last = d;
+    refreshDbWeeks(d.weeks_available);
+    renderDashboard(d);
+  } catch(e){
+    const out = document.getElementById('out-db');
+    if (out) out.innerHTML = `<div class="msg err">❌ ${esc(e.message)}<br><small>Vérifiez que le serveur a été redémarré après l'ajout des routes Dashboard dans main.py.</small></div>`;
+    toast('Dashboard : ' + e.message, 'err');
+  }
+  busy($('#btn-db'), false);
+}
+on('#db-period', 'change', () => { $('#db-month').disabled = $('#db-period').value === 'mensuel'; loadDashboard(); });
+on('#db-month', 'change', loadDashboard);
+on('#db-week', 'change', loadDashboard);
+on('#btn-db', 'click', loadDashboard);
+on('.tab[data-tab="p9"]', 'click', loadDashboard);
+on('#btn-exp-db', 'click', () => {
+  const period = $('#db-period').value;
+  const params = new URLSearchParams({period});
+  if (period !== 'mensuel'){
+    if ($('#db-month').value) params.set('month', $('#db-month').value);
+    if ($('#db-week').value) params.set('week', $('#db-week').value);
+  }
+  window.open('/api/export_dashboard?' + params, '_blank');
+});
+
+/* ================= INITIALISATION ================= */
+(function init(){
+  /* Multi-selects des pages 1 à 4 */
+  MULTI_IDS.forEach(initMultiSelect);
+  /* Mois par défaut du dashboard : mois courant */
+  const m = $('#db-month');
+  if (m && !m.value){
+    const n = new Date();
+    m.value = n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0');
+  }
+  /* Rôle courant + éventuelle restauration locale */
+  (async () => {
+    try {
+      const me = await api('/api/me', {silent:true});
+      ROLE = me.role || null;
+      applyRoleUI();
+    } catch(e){ ROLE = null; }
+    await restoreIfEmpty();
+    await refreshState();
+    await loadP1();
+    await autoLoadAll();
+  })();
 })();
