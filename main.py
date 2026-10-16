@@ -1103,6 +1103,18 @@ def api_result(key):
     r = get_result(week, key)
     return {'found': r is not None, 'data': r}
 
+@app.get('/api/load_all')
+@login_required
+def api_load_all():
+    """Retourne en un seul appel TOUS les résultats sauvegardés de la semaine courante."""
+    week = STATE.get('current_week')
+    results = {}
+    for key in ('p2', 'p3', 'p4', 'conf', 'constat', 'recap', 'synthese'):
+        r = get_result(week, key)
+        if r is not None:
+            results[key] = r
+    return {'week': week, 'results': results}
+
 @app.get('/api/page1')
 @login_required
 def api_page1():
