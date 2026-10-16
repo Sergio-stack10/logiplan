@@ -1,4 +1,4 @@
-import os, io, re, pickle, datetime, unicodedata, gzip, secrets, threading, difflib
+import os, io, re, pickle, shutil, datetime, unicodedata, gzip, secrets, threading, difflib
 from functools import wraps
 import pandas as pd
 import numpy as np
@@ -126,7 +126,7 @@ def load_state():
     if not isinstance(s.get('synth_edits'), dict): s['synth_edits'] = {}
     if not isinstance(s.get('menu_edits'), dict): s['menu_edits'] = {}
     if not isinstance(s.get('synth_pu'), (int, float)): s['synth_pu'] = 0
-    if not isinstance(s.get('consommations'), dict): s['consommations'] = {}    
+    if not isinstance(s.get('consommations'), dict): s['consommations'] = {}
     ref = s.get('reference')
     if ref is not None and not isinstance(ref, pd.DataFrame): s['reference'] = None
     return s
@@ -200,7 +200,8 @@ def state_to_doc():
         return df_payload(d) if isinstance(d, pd.DataFrame) and not d.empty else None
     plannings = {w: dfd(df) for w, df in STATE['plannings'].items()}
     commandes = {w: dfd(df) for w, df in STATE['commandes'].items() if isinstance(df, pd.DataFrame)}
-    consommations = {w: dfd(df) for w, df in STATE.get('consommations', {}).items() if isinstance(df, pd.DataFrame)}
+    consommations = {w: dfd(df) for w, df in STATE.get('consommations', {}).items()
+                     if isinstance(df, pd.DataFrame)}
     ref = dfd(STATE.get('reference')) if isinstance(STATE.get('reference'), pd.DataFrame) else None
     calculs = {}
     for w, c in STATE['calculs'].items():
@@ -208,8 +209,8 @@ def state_to_doc():
             out = {k: c[k] for k in ('presta', 'theorique', 'taux') if isinstance(c.get(k), dict)}
             if isinstance(c.get('results'), dict): out['results'] = c['results']
             calculs[w] = out
-    return {'plannings': plannings, 'commandes': commandes, 'reference': ref,'consommations': consommations,
-            'calculs': calculs, 'current_week': STATE.get('current_week'),
+    return {'plannings': plannings, 'commandes': commandes, 'consommations': consommations,
+            'reference': ref, 'calculs': calculs, 'current_week': STATE.get('current_week'),
             'synth_pu': STATE.get('synth_pu', 0),
             'synth_edits': STATE.get('synth_edits', {}),
             'menu_edits': STATE.get('menu_edits', {})}
@@ -234,6 +235,11 @@ def apply_doc_to_state(doc):
         df['Paid ID'] = df['Paid ID'].apply(clean_id)
         df = df[df['Paid ID'] != '']
         if not df.empty: commandes[w] = df
+    consommations = {}
+    for w, d in (doc.get('consommations') or {}).items():
+        cdf = df_from_payload(d)
+        if cdf is not None and {'Paid ID', 'Date'}.issubset(cdf.columns):
+            consommations[w] = cdf
     ref = df_from_payload(doc.get('reference'))
     if ref is not None and not {'WORKDAY ID', 'REF_PAID_ID'}.issubset(ref.columns):
         ref = None
@@ -244,6 +250,7 @@ def apply_doc_to_state(doc):
                           if k in ('presta', 'theorique', 'taux', 'results') and isinstance(v, dict)}
     STATE['plannings'] = plannings
     STATE['commandes'] = commandes
+    STATE['consommations'] = consommations
     STATE['reference'] = ref
     STATE['calculs'] = calculs
     if isinstance(doc.get('synth_edits'), dict): STATE['synth_edits'] = doc['synth_edits']
@@ -252,7 +259,7 @@ def apply_doc_to_state(doc):
     cw = doc.get('current_week')
     STATE['current_week'] = cw if cw in plannings else (next(iter(sorted(plannings)), None))
 
-# ⚠️ Bloc placé ICI : après df_from_payload / planning_valide / _to_float (sinon NameError)
+# Restauration depuis MongoDB si l'état local est vide
 if not STATE['plannings'] and mongo_col is not None:
     print(">>> Restauration : état local vide, tentative Mongo...")
     try:
@@ -273,7 +280,7 @@ if not STATE['plannings'] and mongo_col is not None:
     except Exception as e:
         print(">>> Restauration MongoDB impossible :", e)
 
-# ================= SAVE_STATE ASYNCHRONE =================
+# ================= SAVE_STATE ASYNCHRONE (+ backup .bak) =================
 _mongo_lock = threading.Lock()
 _mongo_pending = None
 
@@ -293,6 +300,9 @@ def _mongo_write_async():
 def save_state():
     global _mongo_pending
     try:
+        if os.path.exists(DATA_FILE):
+            try: shutil.copy2(DATA_FILE, DATA_FILE + '.bak')
+            except Exception: pass
         with open(DATA_FILE, 'wb') as f:
             pickle.dump(STATE, f)
     except Exception:
@@ -348,13 +358,12 @@ def get_menu_edits(week):
 def store_result(week, key, payload):
     if week:
         STATE['calculs'].setdefault(week, {})['results'] = STATE['calculs'].get(week, {}).get('results', {})
-        STATE['calculs'][week]['results'][key] = payload   # ← LA LIGNE MANQUANTE
+        STATE['calculs'][week]['results'][key] = payload
         try:
             with open(DATA_FILE, 'wb') as f:
                 pickle.dump(STATE, f)
         except Exception:
             pass
-        # Persistance Mongo SYNCHRONE : le résultat est dans le cloud avant la réponse HTTP
         if mongo_col is not None:
             try:
                 doc = state_to_doc()
@@ -665,7 +674,7 @@ def parse_reference(src_bytes):
 DT_RE = re.compile(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?')
 
 def cons_match_keys(s):
-    """Clés de rapprochement tolérantes : gère les préfixes W / WT / WA... (CCMS = W + Code barre)."""
+    """Clés de rapprochement tolérantes : gère les préfixes W / WT (CCMS = W + Code barre)."""
     s = clean_id(s)
     if not s: return set()
     s = re.sub(r"[\s\-_.]", "", s)
@@ -752,7 +761,7 @@ def cons_index(week):
     return idx
 
 def make_cons_resolver(cons_idx):
-    """Fonction (paid_id, date_iso) -> {'n':..,'plats':[..]} ou None. Correspondance exacte puis difflib (≥0.85)."""
+    """(paid_id, date_iso) -> {'n':..,'plats':[..]} ou None. Correspondance exacte puis difflib (≥0.85)."""
     cache = {}
     all_keys = list(cons_idx.keys())
     def resolve(paid, date_iso):
@@ -775,7 +784,7 @@ def make_cons_resolver(cons_idx):
     return resolve
 
 def cons_week_dates(week):
-    """Dates réelles de la semaine : déduites des consommations importées (fiable même si année ≠ année courante)."""
+    """Dates réelles de la semaine : déduites des consommations importées si présentes."""
     df = STATE.get('consommations', {}).get(week)
     if isinstance(df, pd.DataFrame) and not df.empty and 'Date' in df.columns:
         out = {}
@@ -1147,8 +1156,6 @@ def api_export_page1():
 
 def _save_p2_refs(week, pivot, prest):
     calc = STATE['calculs'].setdefault(week, {})
-    # Garde-fou : si les champs saisis sont tous à 0 alors qu'une valeur existe déjà,
-    # on conserve les valeurs précédentes (évite l'écrasement par un affichage réinitialisé)
     old = calc.get('presta') or {}
     if all(p == 0 for p in prest) and any(_to_int(v) > 0 for v in old.values()):
         print(">>> _save_p2_refs : prestataires tous à 0 — valeurs précédentes conservées")
@@ -1295,7 +1302,6 @@ def api_set_pu():
         save_state()
     return {'ok': True, 'pu': _to_float(STATE.get('synth_pu'), 0)}
 
-
 @app.get('/api/prefixes')
 @login_required
 def api_prefixes():
@@ -1307,118 +1313,114 @@ def api_prefixes():
                 'prefixes': [{'prefix': p, 'entity': entity_for_prefix(p)} for p in prefixes]}
     except Exception as e:
         app.logger.exception("api_prefixes")
-        return jsonify({'error': f"Correspondance impossible : {e}"}), 400
+        return jsonify({'error': str(e)}), 500
+
+# ================= RECAP MENUS =================
+@app.post('/api/recap')
+@admin_required
+def api_recap():
+    try:
+        week, pl, cmd = current_data()
+        if pl is None:
+            return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
+        body = request.get_json(force=True, silent=True) or {}
+        taux_raw = body.get('taux') or {}
+        taux_by_day = {j: _to_float(taux_raw.get(j, 0)) for j in JOURS}
+        STATE['calculs'].setdefault(week, {})['taux'] = taux_by_day
+        theo, presta = get_effectifs_refs(week)
+        if theo is None:
+            p = pl.copy()
+            p['Paid ID'] = p['Paid ID'].apply(clean_id)
+            p = p[p['Paid ID'] != '']
+            p['Entite'] = p['Paid ID'].apply(entity_for)
+            theo = {}
+            for j in JOURS:
+                if f'{j}_Flag' in p.columns:
+                    theo[j] = int(((p[f'{j}_Flag'] == 1) & (p['Entite'] == 'PROD / PLANIFIÉ')).sum())
+                else:
+                    theo[j] = 0
+        if presta is None:
+            presta = {j: 0 for j in JOURS}
+        menu_edits = get_menu_edits(week)
+        recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta, menu_edits)
+        warnings = []
+        if cmd is None:
+            warnings.append("Aucun fichier Commandes importé pour cette semaine.")
+        dates = derive_week_dates(week)
+        days, summary_rows = {}, []
+        for j in JOURS:
+            entities = []
+            row_sum = {'Jour': j}
+            planned_total = 0
+            for ent in ENTITES_MAIN:
+                r = recap.get((j, ent))
+                if r is None: continue
+                entities.append({'entity': ent, 'color': ENTITY_COLORS.get(ent, '#888'),
+                                 'rows': r['df'].to_dict('records'),
+                                 'planned_n': r['planned_n'], 'sans_choix': r['sans_choix'],
+                                 'abs_prevues': r['abs_prevues']})
+                row_sum[ent] = r['total_ac']
+                planned_total += r['planned_n']
+            d = dates.get(j)
+            days[j] = {'entities': entities, 'a_commander': day_totals.get(j, 0),
+                       'date': d.strftime('%d/%m/%Y') if d else '',
+                       'dateIso': d.isoformat() if d else ''}
+            row_sum['Planifié total'] = planned_total
+            row_sum['À commander'] = day_totals.get(j, 0)
+            summary_rows.append(row_sum)
+        payload = {'week': week, 'day_order': JOURS, 'days': days, 'summary_rows': summary_rows,
+                   'warnings': warnings, 'has_planning': pl is not None}
+        store_result(week, 'recap', payload)
+        save_state()
+        return payload
+    except Exception as e:
+        app.logger.exception("api_recap")
+        return jsonify({'error': f"Récapitulatif impossible : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/menu_edit')
 @admin_required
 def api_menu_edit():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        diso = str(body.get('date') or '')
-        menu = str(body.get('menu') or '').strip()
-        if not diso or not menu:
-            return jsonify({'error': "Requête incomplète"}), 400
-        cur = STATE.setdefault('menu_edits', {}).setdefault(diso, {})
-        if body.get('nombres') is None:
-            cur.pop(menu, None)
-        else:
-            cur[menu] = max(0, _to_int(body.get('nombres')))
-        save_state()
-        return {'ok': True}
-    except Exception as e:
-        app.logger.exception("api_menu_edit")
-        return jsonify({'error': f"Enregistrement impossible : {e}"}), 400
-
-def _recap_compute(body):
-    week, pl, cmd = current_data()
-    if is_admin():
-        raw_taux = body.get('taux') or {}
-        taux_by_day = {j: _to_float(raw_taux.get(j), 0) for j in JOURS}
-    else:
-        taux_by_day = get_week_taux(week)
-    theo, presta = get_effectifs_refs(week)
-    recap, day_totals = compute_recap_menus(pl, cmd, JOURS, taux_by_day, theo, presta, get_menu_edits(week))
-    warnings = []
-    if theo is None:
-        warnings.append("Total Théorique introuvable : l'administrateur doit calculer la page Effectifs.")
-    if presta is None:
-        warnings.append("Prestataires (Hors Planning) non renseignés par l'administrateur : Planifié HORS PROD = 0.")
-    return week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day
-
-@app.post('/api/recap')
-@login_required
-def api_recap():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        week, pl, cmd, recap, day_totals, theo, presta, warnings, taux_by_day = _recap_compute(body)
-        if cmd is None:
-            return jsonify({'error': "Aucune commande disponible : l'administrateur doit importer le fichier Commandes."}), 400
-        if is_admin():
-            STATE['calculs'].setdefault(week, {})['taux'] = taux_by_day
-            save_state()
-        dates = derive_week_dates(week)
-        mois_fr = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août",
-                   "septembre", "octobre", "novembre", "décembre"]
-        days, day_order, summary = {}, [], []
-        for j in JOURS:
-            d = dates.get(j)
-            date_txt = f"{d.day:02d} {mois_fr[d.month-1]} {d.year}" if d else ""
-            a_cmd = day_totals[j]
-            entities = []
-            for ent in ENTITES_MAIN:
-                blk = recap[(j, ent)]
-                rows = [{'Choix': r['Choix'], 'Nombres': _to_int(r['Nombres']),
-                         'Pourcentage': round(float(r['Pourcentage']), 1),
-                         'À commander': _to_int(r['À commander'])}
-                        for r in blk['df'].to_dict('records')]
-                entities.append({'entity': ent, 'color': ENTITY_COLORS[ent],
-                                 'planned_n': blk['planned_n'], 'sans_choix': blk['sans_choix'],
-                                 'abs_prevues': blk['abs_prevues'], 'rows': rows})
-            days[j] = {'date': date_txt, 'dateIso': (d.isoformat() if d else ''),
-                       'a_commander': a_cmd,
-                       'ent_line': " • ".join(f"{e} : {recap[(j, e)]['total_ac']}" for e in ENTITES_MAIN),
-                       'entities': entities}
-            day_order.append(j)
-            row = {'Jour': j}
-            row.update({e: recap[(j, e)]['total_ac'] for e in ENTITES_MAIN})
-            row['Planifié total'] = sum(recap[(j, e)]['planned_n'] for e in ENTITES_MAIN)
-            row['À commander'] = a_cmd
-            summary.append(row)
-        total = {'Jour': 'TOTAL SEMAINE'}
-        for k in ENTITES_MAIN + ['Planifié total', 'À commander']:
-            total[k] = sum(r[k] for r in summary)
-        summary.append(total)
-        payload = {'week': week, 'day_order': day_order, 'days': days, 'summary_rows': summary,
-                   'has_planning': pl is not None, 'has_theo': theo is not None,
-                   'has_presta': presta is not None, 'warnings': warnings}
-        if is_admin():
-            store_result(week, 'recap', payload)
-        return payload
-    except Exception as e:
-        app.logger.exception("api_recap")
-        return jsonify({'error': f"Erreur de calcul : {type(e).__name__} — {e}"}), 400
+    b = request.get_json(force=True, silent=True) or {}
+    date = str(b.get('date') or '')[:10]
+    menu = str(b.get('menu') or '').strip()
+    n = max(0, _to_int(b.get('nombres')))
+    if not date or not menu:
+        return jsonify({'error': "Date ou menu manquant"}), 400
+    STATE.setdefault('menu_edits', {}).setdefault(date, {})[menu] = n
+    save_state()
+    return {'ok': True}
 
 @app.post('/api/export_recap')
-@login_required
+@admin_required
 def api_export_recap():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        week, pl, cmd, recap, _, _, _, _, _ = _recap_compute(body)
-        if cmd is None: return jsonify({'error': "Aucune commande disponible."}), 400
-        export_rows = [{'Jour': j, 'Entité': ent, 'Choix': r['Choix'], 'Nombres': r['Nombres'],
-                        'Pourcentage (%)': round(float(r['Pourcentage']), 1), 'À commander': r['À commander']}
-                       for j in JOURS for ent in ENTITES for _, r in recap[(j, ent)]['df'].iterrows()]
-        return dl(excel_bytes(pd.DataFrame(export_rows), 'Recap'), 'recap_commandes_menus.xlsx')
-    except Exception as e:
-        app.logger.exception("api_export_recap")
-        return jsonify({'error': f"Erreur d'export : {e}"}), 400
+    wk = STATE.get('current_week')
+    r = get_result(wk, 'recap')
+    if r is None: return jsonify({'error': "Générez d'abord le récapitulatif."}), 400
+    out_rows = []
+    for row in r.get('summary_rows', []):
+        out_rows.append(row)
+    df = pd.DataFrame(out_rows)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as w:
+        df.to_excel(w, index=False, sheet_name='Synthese')
+        start = 1
+        for day in r.get('day_order', []):
+            D = r['days'].get(day, {})
+            for e in D.get('entities', []):
+                edf = pd.DataFrame(e.get('rows', []))
+                edf.to_excel(w, index=False, sheet_name=f"{day[:3]} {e['entity'][:6]}".strip()[:31], startrow=start)
+                start += len(edf) + 3
+    buf.seek(0)
+    return dl(buf, 'recap_commandes_menus.xlsx')
 
+# ================= CONSTATS =================
 @app.post('/api/page7')
-@login_required
+@admin_required
 def api_page7():
     try:
         week, pl, cmd = current_data()
         if pl is None: return jsonify({'error': "Chargez d'abord un planning (onglet 1)."}), 400
+        if cmd is None: return jsonify({'error': "Importez le fichier Commandes dans la barre latérale."}), 400
         resolve = make_cons_resolver(cons_index(week))
         conf = build_conf(pl, cmd, resolve, cons_week_dates(week))
         anom = build_anomalies(conf, week)
@@ -1434,131 +1436,155 @@ def api_page7():
 def api_export_anom():
     wk = STATE.get('current_week')
     r = get_result(wk, 'constat')
-    if r is None: return jsonify({'error': "Générez d'abord la confrontation."}), 400
+    if r is None: return jsonify({'error': "Générez d'abord les constats."}), 400
     return dl(excel_bytes(pd.DataFrame(r['rows'])), 'constats_commande.xlsx')
 
+@app.get('/api/matricules')
+@login_required
+def api_matricules():
+    week, pl, _ = current_data()
+    ref = STATE.get('reference')
+    if pl is None or not isinstance(ref, pd.DataFrame) or ref.empty:
+        return {'mismatch': {'columns': [], 'rows': []}, 'notfound': {'columns': [], 'rows': []},
+                'error': "Importez le Planning et la Liste Actif pour lancer la vérification."}
+    p = pl[['WORKDAY ID', 'Paid ID']].copy()
+    p['Paid ID'] = p['Paid ID'].apply(clean_id)
+    p = p[p['Paid ID'] != ''].drop_duplicates(subset=['WORKDAY ID'])
+    r = ref.copy()
+    r['REF_PAID_ID'] = r['REF_PAID_ID'].apply(clean_id)
+    merged = pd.merge(p, r, on='WORKDAY ID', how='left')
+    mm = merged[(merged['REF_PAID_ID'].notna()) & (merged['REF_PAID_ID'] != '') &
+                (merged['Paid ID'] != merged['REF_PAID_ID'])]
+    nf = merged[(merged['REF_PAID_ID'].isna()) | (merged['REF_PAID_ID'] == '')]
+    mm2 = mm.rename(columns={'Paid ID': 'Paid ID (Planning)', 'REF_PAID_ID': 'Paid ID (Liste Actif)'})
+    nf2 = nf[['WORKDAY ID', 'Paid ID']].rename(columns={'Paid ID': 'Paid ID (Planning)'})
+    return {'mismatch': df_payload(mm2), 'notfound': df_payload(nf2)}
+
 # ================= SYNTHÈSE MENSUELLE =================
-SYN_COLS = ['Date', 'Semaine', 'Planifié total', 'À commander', 'Commande finale', 'Consommé',
-            'Non consommé', 'À facturer', 'QS (%)', 'QS conso vs commandé final (%)',
-            'MONTANT DA MGA HT', 'Nombre de plat ajusté', 'Pourcentage plat ajusté (%)']
+def _planned_by_day(pl_df):
+    out = {}
+    if pl_df is None: return out
+    for j in JOURS:
+        col = f'{j}_Flag'
+        if col not in pl_df.columns: continue
+        out[j] = int(pd.to_numeric(pl_df[col], errors='coerce').fillna(0).gt(0).sum())
+    return out
 
-def _synth_compute(body):
-    week = STATE.get('current_week')
-    month = (body.get('month') or '').strip()
-    if not re.match(r'^\d{4}-\d{2}$', month):
-        d = derive_week_dates(week).get('Lundi') if week else None
-        month = f"{d.year}-{d.month:02d}" if d else datetime.date.today().strftime('%Y-%m')
-    year, mon = int(month[:4]), int(month[5:7])
-    first = datetime.date(year, mon, 1)
-    nxt = datetime.date(year + (mon == 12), (mon % 12) + 1, 1)
-    last = nxt - datetime.timedelta(days=1)
-
-    if is_admin():
-        if body.get('pu') is not None:
-            STATE['synth_pu'] = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
-        for diso, fields in (body.get('edits') or {}).items():
-            if not isinstance(fields, dict): continue
-            cur = STATE.setdefault('synth_edits', {}).setdefault(diso, {})
-            for f in ('commande_finale', 'consomme'):
-                if f in fields:
-                    cur[f] = None if fields[f] is None else _to_int(fields[f])
-        save_state()
-    pu = _to_float(STATE.get('synth_pu'), 0)
-
-    rows = []
-    for w in sorted(STATE['plannings'].keys()):
-        dates = derive_week_dates(w)
-        taux = get_week_taux(w)
-        theo, presta = get_effectifs_refs(w)
-        recap, day_totals = compute_recap_menus(STATE['plannings'][w], STATE['commandes'].get(w),
-                                                JOURS, taux, theo, presta, get_menu_edits(w))
-        for j in JOURS:
-            d = dates.get(j)
-            if not d or not (first <= d <= last): continue
+def _build_synthese(month, pu, edits):
+    if not month:
+        month = datetime.datetime.now().strftime('%Y-%m')
+    try:
+        y, m = int(month[:4]), int(month[5:7])
+    except Exception:
+        return []
+    rows_by_date = {}
+    for week in sorted(STATE['plannings'].keys()):
+        dates = derive_week_dates(week)
+        in_month = {j: d for j, d in dates.items() if d.year == y and d.month == m}
+        if not in_month: continue
+        pl = STATE['plannings'].get(week)
+        theo, presta = get_effectifs_refs(week)
+        taux_by_day = get_week_taux(week)
+        planned_by_day = _planned_by_day(pl)
+        cons_by_date = {}
+        idx = cons_index(week)
+        for _k, dv in idx.items():
+            for d, info in dv.items():
+                cons_by_date[d] = cons_by_date.get(d, 0) + info['n']
+        for j, d in in_month.items():
             diso = d.isoformat()
-            ed = STATE['synth_edits'].get(diso) or {}
-            a_cmd = day_totals[j]
-            planifie_total = sum(recap[(j, e)]['planned_n'] for e in ENTITES_MAIN)
-            cf = a_cmd if ed.get('commande_finale') is None else _to_int(ed['commande_finale'])
-            conso = max(0, _to_int(ed['consomme'])) if ed.get('consomme') is not None else 0
-            non_conso = max(0, cf - conso)
-            a_facturer = cf if cf > conso else conso
-            qs = (conso / cf * 100) if cf > 0 else 0.0
-            qs_vs = 100.0 if (cf > conso) else ((conso / cf * 100) if cf > 0 else 0.0)
-            montant = round(a_facturer * pu, 2)
-            nb_ajuste = cf - a_cmd
-            pct_ajuste = (nb_ajuste / a_cmd * 100) if a_cmd > 0 else 0.0
-            rows.append({'DateIso': diso,
-                         'Date': f"{JOURS_ABR[j]} {d.strftime('%d/%m/%Y')}",
-                         'Semaine': w, 'Planifié total': planifie_total, 'À commander': a_cmd,
-                         'Commande finale': cf, 'Consommé': conso, 'Non consommé': non_conso,
-                         'À facturer': a_facturer, 'QS (%)': round(qs, 1),
-                         'QS conso vs commandé final (%)': round(qs_vs, 1),
-                         'MONTANT DA MGA HT': montant, 'Nombre de plat ajusté': nb_ajuste,
-                         'Pourcentage plat ajusté (%)': round(pct_ajuste, 1)})
-    rows.sort(key=lambda r: r['DateIso'])
-    sum_keys = ['Planifié total', 'À commander', 'Commande finale', 'Consommé', 'Non consommé',
-                'À facturer', 'MONTANT DA MGA HT', 'Nombre de plat ajusté']
-    total = {'Date': 'TOTAL', 'Semaine': ''}
-    t_cf = sum(r['Commande finale'] for r in rows)
-    t_conso = sum(r['Consommé'] for r in rows)
-    for k in sum_keys:
+            theo_n = _to_int((theo or {}).get(j, planned_by_day.get(j, 0)))
+            taux = _to_float(taux_by_day.get(j, 0))
+            est = int(round(theo_n * (1 - taux / 100.0)))
+            prest_n = _to_int((presta or {}).get(j, 0))
+            a_commander = est + prest_n
+            e = edits.get(diso) or {}
+            cmd_finale = _to_int(e.get('commande_finale', a_commander))
+            consomme = _to_int(e.get('consomme', cons_by_date.get(diso, 0)))
+            non_conso = max(0, cmd_finale - consomme)
+            a_facturer = cmd_finale if cmd_finale > consomme else consomme
+            qs = round(consomme / cmd_finale * 1000) / 10 if cmd_finale > 0 else 0
+            qs2 = 100 if cmd_finale > consomme else (round(consomme / cmd_finale * 1000) / 10 if cmd_finale > 0 else 0)
+            me = STATE.get('menu_edits', {}).get(diso) or {}
+            plat_ajuste = _to_int(e.get('plat_ajuste', len(me)))
+            rows_by_date[diso] = {
+                'DateIso': diso, 'Date': d.strftime('%d/%m/%Y'), 'Semaine': week,
+                'Planifié total': theo_n, 'À commander': a_commander,
+                'Commande finale': cmd_finale, 'Consommé': consomme,
+                'Non consommé': non_conso, 'À facturer': a_facturer,
+                'QS (%)': qs, 'QS conso vs commandé final (%)': qs2,
+                'MONTANT DA MGA HT': int(round(a_facturer * pu)),
+                'Nombre de plat ajusté': plat_ajuste,
+                'Pourcentage plat ajusté (%)': round(plat_ajuste / a_commander * 1000) / 10 if a_commander > 0 else 0}
+    rows = [rows_by_date[k] for k in sorted(rows_by_date)]
+    if not rows:
+        return []
+    total = {'Date': 'TOTAL', 'Semaine': '', 'DateIso': ''}
+    for k in ('Planifié total', 'À commander', 'Commande finale', 'Consommé', 'Non consommé',
+              'À facturer', 'MONTANT DA MGA HT', 'Nombre de plat ajusté'):
         total[k] = sum(r[k] for r in rows)
-    qs_num = sum(r['Consommé'] for r in rows if r['Consommé'] > 0)
-    qs_den = sum(r['Commande finale'] for r in rows if r['Consommé'] > 0)
-    total['QS (%)'] = round((qs_num / qs_den * 100) if qs_den > 0 else 0.0, 1)
-    total['QS conso vs commandé final (%)'] = 100.0 if (t_cf > t_conso) else ((t_conso / t_cf * 100) if t_cf > 0 else 0.0)
-    total['Pourcentage plat ajusté (%)'] = round((total['Nombre de plat ajusté'] / total['À commander'] * 100)
-                                                 if total['À commander'] > 0 else 0.0, 1)
-    return {'week': week, 'month': month, 'pu': pu, 'rows': rows + [total]}
+    done = [r for r in rows if r['Consommé'] > 0]
+    qn = sum(r['Consommé'] for r in done); qd = sum(r['Commande finale'] for r in done)
+    total['QS (%)'] = round(qn / qd * 1000) / 10 if qd > 0 else 0
+    total['QS conso vs commandé final (%)'] = 100 if total['Commande finale'] > total['Consommé'] else \
+        (round(total['Consommé'] / total['Commande finale'] * 1000) / 10 if total['Commande finale'] > 0 else 0)
+    total['Pourcentage plat ajusté (%)'] = round(total['Nombre de plat ajusté'] / total['À commander'] * 1000) / 10 \
+        if total['À commander'] > 0 else 0
+    rows.append(total)
+    return rows
 
 @app.post('/api/synthese')
 @login_required
 def api_synthese():
     try:
         body = request.get_json(force=True, silent=True) or {}
-        if not STATE['plannings']:
-            return jsonify({'error': "Aucune semaine chargée."}), 400
-        p = _synth_compute(body)
+        month = str(body.get('month') or '')
+        pu = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
+        edits = {}
         if is_admin():
-            store_result(STATE.get('current_week'), 'synthese', p)
-        return p
+            raw = body.get('edits') or {}
+            if isinstance(raw, dict):
+                for d, v in raw.items():
+                    if isinstance(v, dict):
+                        edits[str(d)[:10]] = v
+                se = STATE.setdefault('synth_edits', {})
+                for d, v in edits.items(): se[d] = v
+            STATE['synth_pu'] = pu
+        else:
+            se = STATE.get('synth_edits') or {}
+            for d, v in se.items():
+                if isinstance(v, dict): edits[d] = v
+        rows = _build_synthese(month, pu, edits)
+        payload = {'month': month, 'pu': pu, 'rows': rows}
+        if is_admin():
+            store_result(STATE.get('current_week'), 'synthese', payload)
+            save_state()
+        return payload
     except Exception as e:
         app.logger.exception("api_synthese")
-        return jsonify({'error': f"Erreur synthèse : {type(e).__name__} — {e}"}), 400
+        return jsonify({'error': f"Synthèse impossible : {type(e).__name__} — {e}"}), 400
 
 @app.post('/api/export_synthese')
 @login_required
 def api_export_synthese():
-    try:
-        body = request.get_json(force=True, silent=True) or {}
-        p = _synth_compute(body)
-        df = pd.DataFrame([{k: r[k] for k in SYN_COLS} for r in p['rows']])
-        return dl(excel_bytes(enforce_cols(df, SYN_COLS), 'Synthese'), 'synthese_mensuelle.xlsx')
-    except Exception as e:
-        app.logger.exception("export_synthese")
-        return jsonify({'error': f"Erreur d'export : {e}"}), 400
-
-@app.get('/api/matricules')
-@login_required
-def api_matricules():
-    week, pl, _ = current_data()
-    if pl is None: return jsonify({'error': "Chargez d'abord un planning."}), 400
-    ref = STATE.get('reference')
-    if not isinstance(ref, pd.DataFrame):
-        return jsonify({'error': "Importez le fichier « Liste Actif » dans la barre latérale."}), 400
-    check = pd.merge(pl[['WORKDAY ID', 'Paid ID', 'Nom', 'Projet']], ref[['WORKDAY ID', 'REF_PAID_ID']],
-                     on='WORKDAY ID', how='left')
-    mismatch = check[(check['REF_PAID_ID'].notna()) & (check['Paid ID'].astype(str) != check['REF_PAID_ID'].astype(str))]
-    notfound = check[check['REF_PAID_ID'].isna()]
-    return {'mismatch': df_payload(mismatch), 'notfound': df_payload(notfound)}
+    body = request.get_json(force=True, silent=True) or {}
+    month = str(body.get('month') or '')
+    pu = _to_float(body.get('pu'), STATE.get('synth_pu', 0))
+    edits = STATE.get('synth_edits') or {} if not is_admin() else (body.get('edits') or STATE.get('synth_edits') or {})
+    rows = _build_synthese(month, pu, edits)
+    if not rows:
+        return jsonify({'error': "Aucune donnée pour ce mois."}), 400
+    df = pd.DataFrame(rows)[['Date', 'Semaine', 'Planifié total', 'À commander', 'Commande finale',
+                             'Consommé', 'Non consommé', 'À facturer', 'QS (%)',
+                             'QS conso vs commandé final (%)', 'MONTANT DA MGA HT',
+                             'Nombre de plat ajusté', 'Pourcentage plat ajusté (%)']]
+    return dl(excel_bytes(df, sheet='Synthese'), 'synthese_mensuelle.xlsx')
 
 # ================= DASHBOARD =================
 MONTHS_FR = {1:'Janv.',2:'Févr.',3:'Mars',4:'Avr.',5:'Mai',6:'Juin',
              7:'Juil.',8:'Août',9:'Sept.',10:'Oct.',11:'Nov.',12:'Déc.'}
 
 def _resolve_date(r, w):
-    """Date ISO d'une ligne de synthèse : DateIso → 'AAAA-MM-JJ' → 'JJ/MM/AAAA' → 'JJ/MM' (via semaine)."""
     iso = str(r.get('DateIso') or '').strip()
     m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})', iso)
     if m:
@@ -1585,7 +1611,6 @@ def _resolve_date(r, w):
 
 def _dashboard_data(period='journalier', month='', week=''):
     period = period if period in ('journalier', 'hebdo', 'mensuel') else 'journalier'
-    # 1) Collecte des lignes journalières depuis toutes les synthèses enregistrées
     by_date = {}
     for w in sorted(STATE['plannings'].keys()):
         syn = get_result(w, 'synthese')
@@ -1593,7 +1618,7 @@ def _dashboard_data(period='journalier', month='', week=''):
         for r in syn.get('rows', []):
             date_iso = _resolve_date(r, w)
             if not date_iso: continue
-            by_date[date_iso] = {   # dédoublonnage par date (même date présente dans plusieurs synthèses du mois)
+            by_date[date_iso] = {
                 'date': date_iso, 'week': str(r.get('Semaine') or w), 'month': date_iso[:7],
                 'consomme': _to_float(r.get('Consommé')),
                 'commande_finale': _to_float(r.get('Commande finale')),
@@ -1603,11 +1628,9 @@ def _dashboard_data(period='journalier', month='', week=''):
     daily = sorted(by_date.values(), key=lambda x: x['date'])
     weeks_available = sorted({d['week'] for d in daily})
     months_available = sorted({d['month'] for d in daily})
-    # 2) Filtres (ignorés en vue mensuelle)
     if period != 'mensuel':
         if week: daily = [d for d in daily if d['week'] == week]
         if month: daily = [d for d in daily if d['month'] == month]
-    # 3) Agrégation selon la période
     if period == 'journalier':
         key_fn = lambda d: d['date']; label_fn = lambda d: d['date'][8:10] + '/' + d['date'][5:7]
     elif period == 'hebdo':
@@ -1662,5 +1685,7 @@ def api_export_dashboard():
                   'Non consommé', 'QS (%)', 'MONTANT DA MGA HT']
     return dl(excel_bytes(df, sheet='Dashboard'), 'dashboard.xlsx')
 
+# ================= DÉMARRAGE =================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
