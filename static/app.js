@@ -7,7 +7,6 @@ const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function on(sel, evt, fn){ const el = typeof sel === 'string' ? document.querySelector(sel) : sel; if (el) el.addEventListener(evt, fn); }
 
-/* ================= TOAST ================= */
 function toast(text, type='ok'){
   try {
     const box = document.getElementById('toasts');
@@ -18,7 +17,6 @@ function toast(text, type='ok'){
   } catch(e){ console.error(text); }
 }
 
-/* ================= OVERLAY DE CHARGEMENT (watchdog) ================= */
 let pendingReqs = 0, loadingTimer = null, loadingWatchdog = null;
 function showLoadingOverlay(label){
   let ov = document.getElementById('loading-overlay');
@@ -80,7 +78,6 @@ function busy(btn, on_, label){
 function numVal(id){ const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
 function intVal(id){ const el = document.getElementById(id); const v = el ? parseInt(el.value) : NaN; return Number.isFinite(v) ? v : 0; }
 
-/* ================= MULTI-SELECT (cases à cocher + Tout sélectionner) ================= */
 const MS = { comps: {} };
 function initMultiSelect(id){
   const sel = document.getElementById(id);
@@ -144,7 +141,6 @@ const MULTI_IDS = ['f1-transport','f1-projet','f1-statut','f2-projet','f2-statut
                    'f3-transport','f3-projet','f3-statut','f4-projet','f4-statut'];
 function fillSelect(sel, values){ msFill((typeof sel === 'string') ? sel : sel.id, values || []); }
 
-/* ================= HELPERS TABLEAUX ================= */
 function orderedRows(rows, order){
   if (!rows || !rows.length) return rows;
   const known = new Set(order);
@@ -179,7 +175,6 @@ function searchRows(rows, text){
   return (rows||[]).filter(r => Object.values(r).some(v => String(v ?? '').toLowerCase().includes(s)));
 }
 
-/* ================= DATES RÉELLES DES JOURS ================= */
 let JOURS_DATE = {};
 const dayLabel = j => JOURS_DATE[j] || j;
 function computeJoursDate(week){
@@ -206,7 +201,6 @@ function computeJoursDate(week){
   } catch(e){}
 }
 
-/* ================= RÔLE ================= */
 const ADMIN_CONTROL_IDS = [
   'btn-import','inp-planning','inp-commande','inp-consommation','inp-reference','inp-week','inp-taux',
   'btn-del-week','btn-import-cons','btn-p2','btn-p3','btn-p4','btn-p5','btn-p6','btn-p7','btn-exp-p2','btn-matr'
@@ -226,13 +220,11 @@ function applyRoleUI(){
   ['#inp-pu'].forEach(sel => { const el = $(sel); if (el) el.disabled = viewer; });
 }
 
-/* ================= DÉCONNEXION ================= */
 on('#btn-logout', 'click', async () => {
   try { await api('/api/logout', {method:'POST', silent:true}); } catch(e){}
   window.location.href = '/logout';
 });
 
-/* ================= INDEXEDDB (backup local) ================= */
 function idbOpen(){ return new Promise((res, rej) => {
   const r = indexedDB.open('logiplan', 1);
   r.onupgradeneeded = () => r.result.createObjectStore('kv');
@@ -245,9 +237,16 @@ async function idbSet(k, v){ const db = await idbOpen(); return new Promise((res
 async function idbGet(k){ const db = await idbOpen(); return new Promise((res, rej) => {
   const tx = db.transaction('kv', 'readonly'); const rq = tx.objectStore('kv').get(k);
   rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });}
+
+/* Backup local : ne JAMAIS écraser un backup existant par un état vide */
 async function saveBackup(){
   if (ROLE !== 'admin') return;
-  try { const snap = await api('/api/backup_export'); await idbSet('state', snap); } catch(e){}
+  try {
+    const snap = await api('/api/backup_export');
+    const hasData = Object.values(snap.plannings || {}).some(x => x && x.rows && x.rows.length);
+    if (!hasData) return;
+    await idbSet('state', snap);
+  } catch(e){}
 }
 async function restoreIfEmpty(){
   try {
@@ -259,11 +258,10 @@ async function restoreIfEmpty(){
     if (!hasData) return;
     const r = await api('/api/backup_import', {method:'POST', headers:{'Content-Type':'application/json'},
                                                body: JSON.stringify(snap)});
-    toast(`💾 Données restaurées (${(r.weeks||[]).join(', ')})`);
+    toast(`💾 Données restaurées depuis la sauvegarde locale (${(r.weeks||[]).join(', ')})`);
   } catch(e){}
 }
 
-/* ================= SIDEBAR & IMPORTS ================= */
 on('#btn-side', 'click', () => document.body.classList.toggle('side-hidden'));
 on('#inp-taux', 'input', e => { $('#taux-val').textContent = e.target.value + '%'; });
 
@@ -281,8 +279,9 @@ on('#btn-import', 'click', async () => {
     let t = `✅ Semaine <b>${esc(res.week)}</b> : ${res.n_planifiees} planifiés, ${res.n_commandes} commandes.`;
     if (res.warnings.length) t += '<br>⚠️ ' + res.warnings.map(esc).join('<br>⚠️ ');
     if ($('#imp-summary')) $('#imp-summary').innerHTML = `<div class="msg ok">${t}</div>`;
+    toast('Import réussi — cliquez sur « 📥 Charger les données » pour afficher la semaine.', 'warn');
     p1Cache.week = undefined;
-    await refreshState(); await loadP1(); await saveBackup();
+    await refreshState(); await saveBackup();
   } catch(e){
     if ($('#imp-summary')) $('#imp-summary').innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`;
     toast(esc(e.message), 'err');
@@ -290,7 +289,6 @@ on('#btn-import', 'click', async () => {
   busy($('#btn-import'), false);
 });
 
-/* Import des consommations seules (nouveau) */
 on('#btn-import-cons', 'click', async () => {
   if (!$('#inp-consommation') || !$('#inp-consommation').files.length) return toast('Choisissez le fichier Consommations.', 'err');
   const fd = new FormData();
@@ -305,18 +303,67 @@ on('#btn-import-cons', 'click', async () => {
   busy($('#btn-import-cons'), false);
 });
 
+const HINT_LOAD = '<div class="hint">📥 Cliquez sur « Charger les données » dans le menu latéral pour afficher les résultats de cette semaine.</div>';
+const HINT_EMPTY = '<div class="hint">Aucun résultat généré pour cette semaine.</div>';
+
+function resetPanelsToHint(){
+  const out2 = $('#out-p2'); if (out2) out2.innerHTML = '';
+  const m2 = $('#p2-metrics'); if (m2) m2.innerHTML = '';
+  ['out-p3','out-p4','out-p5','out-p6','out-p7','out-p8'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.innerHTML = HINT_LOAD;
+  });
+  p5Rows = null; p7Rows = null; lastRecapData = null; lastSynData = null; lastSynRenderRows = null;
+  const sel7 = $('#f7-type'); if (sel7) sel7.innerHTML = '<option value="">Type de constat : tous</option>';
+}
+
+async function loadAllForWeek(showToast = true){
+  const btn = document.getElementById('btn-load-week');
+  busy(btn, true, 'Chargement…');
+  try {
+    p1Cache.week = undefined;
+    await loadP1();
+    const d = await api('/api/load_all');
+    const R = d.results || {};
+    renderP2(R.p2 || null);
+    renderP3(R.p3 || null);
+    renderP4(R.p4 || null);
+    if (R.conf && R.conf.rows){ p5Rows = R.conf.rows; renderP5(); }
+    else { p5Rows = null; $('#out-p5').innerHTML = HINT_LOAD; }
+    if (R.recap && R.recap.day_order){ renderRecap(R.recap); }
+    else { lastRecapData = null; $('#out-p6').innerHTML = HINT_LOAD; }
+    if (R.constat && R.constat.rows){
+      p7Rows = R.constat.rows;
+      const sel7 = $('#f7-type'); if (sel7) sel7.innerHTML = '<option value="">Type de constat : tous</option>';
+      renderP7();
+    } else {
+      p7Rows = null; $('#out-p7').innerHTML = HINT_LOAD;
+    }
+    if (R.synthese && R.synthese.rows){ renderSynthese(R.synthese); }
+    else { lastSynData = null; lastSynRenderRows = null; $('#out-p8').innerHTML = HINT_LOAD; }
+    if (showToast){
+      const keys = ['p2','p3','p4','conf','recap','constat','synthese'];
+      const n = keys.filter(k => R[k]).length;
+      toast(`✅ Semaine <b>${esc(d.week || '')}</b> chargée — résultats disponibles sur ${n} onglet(s)`);
+    }
+  } catch(e){
+    toast('Chargement : ' + esc(e.message), 'err');
+  }
+  busy(btn, false);
+}
+
 on('#sel-week', 'change', async e => {
   await api('/api/select_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: e.target.value})});
-  p1Cache.week = undefined;
-  await loadP1();
-  await autoLoadAll();
+  await refreshState();
+  resetPanelsToHint();
+  toast(`Semaine « ${esc(e.target.value)} » sélectionnée — cliquez sur 📥 Charger les données.`, 'warn');
 });
+on('#btn-load-week', 'click', () => loadAllForWeek(true));
+
 on('#btn-del-week', 'click', async () => {
   if (!confirm('Supprimer définitivement cette semaine et toutes ses données ?')) return;
   await api('/api/delete_week', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({week: $('#sel-week').value})});
   p1Cache.week = undefined;
-  ['out-p2','out-p3','out-p4','out-p5','out-p6','out-p8'].forEach(id => { const el = $('#'+id); if (el) el.innerHTML = ''; });
-  p5Rows = null; p7Rows = null; lastRecapData = null; lastSynData = null; lastSynRenderRows = null;
+  resetPanelsToHint();
   await refreshState(); await loadP1(); await saveBackup();
   toast('Semaine supprimée');
 });
@@ -340,50 +387,16 @@ async function refreshState(){
   }
 }
 
-/* ================= ONGLETS ================= */
  $$('.tab').forEach(b => b.addEventListener('click', async () => {
   $$('.tab').forEach(x => x.classList.remove('active'));
   $$('.panel').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); $('#' + b.dataset.tab).classList.add('active');
   window.scrollTo({top:0});
   if (b.dataset.tab === 'p1') await loadP1();
-  if (b.dataset.tab === 'p6'){ await loadPrefixes(); const r = await getResult('recap'); if (r) renderRecap(r); }
-  if (b.dataset.tab === 'p7'){
-    const c = await getResult('conf'); if (c){ p5Rows = c.rows; }
-    const a = await getResult('constat');
-    if (a){ p7Rows = a.rows; const sel = $('#f7-type'); if (sel) sel.innerHTML = '<option value="">Type de constat : tous</option>'; renderP7(); }
-  }
-  if (b.dataset.tab === 'p8'){ const s8 = await getResult('synthese'); if (s8) renderSynthese(s8); }
+  if (b.dataset.tab === 'p6'){ await loadPrefixes(); }
+  if (b.dataset.tab === 'p9'){ loadDashboard().catch(()=>{}); }
 }));
 
-async function autoLoadAll(){
-  try {
-    const [p2, p3, p4, conf, recap, syn] = await Promise.all(
-      ['p2','p3','p4','conf','recap','synthese'].map(getResult));
-    if (p2 && p2.rows){
-      $('#out-p2').innerHTML = tableHTML(orderedRows(p2.rows, ['Projet', ...JOURS]));
-      if ($('#p2-metrics')) $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
-        `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
-         <div class="val">${p2.metrics[j]}</div><div class="lbl">${esc(dayLabel(j))}</div></div>`).join('');
-      applyPrestaValues(p2);
-    }
-    if (p3 && p3.pivot && p3.pivot.rows)
-      $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
-        tableHTML(orderedRows(p3.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
-        `<details class="mt"><summary>👁️ Liste détaillée</summary>${tableHTML(orderedRows(p3.detail.rows, ['Workday ID','Nom','Projet','Jour','Transport','Shift (Début)']))}</details>`;
-    if (p4 && p4.peaks && p4.peaks.rows)
-      $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet</h3>' +
-        tableHTML(orderedRows(p4.peaks.rows, ['Projet', ...JOURS])) +
-        `<details class="mt"><summary>🕒 Détail par créneau</summary>${tableHTML(orderedRows(p4.slots.rows, ['Créneau', ...JOURS, 'Total Jour']))}</details>`;
-    if (conf && conf.rows){ p5Rows = conf.rows; renderP5(); }
-    if (recap && recap.day_order) renderRecap(recap);
-    if (syn && syn.rows) renderSynthese(syn);
-    const loaded = [p2, p3, p4, conf, recap, syn].filter(Boolean).length;
-    if (loaded > 0) toast(`Résultats rechargés (${loaded} page(s)) ✅`);
-  } catch(e){}
-}
-
-/* ================= PAGE 1 ================= */
 let p1Cache = {week: undefined, rows: [], options: {}, total: 0};
 async function loadP1(){
   try {
@@ -452,7 +465,6 @@ on('#btn-exp-p1', 'click', () => {
   window.open('/api/export_page1?' + p, '_blank');
 });
 
-/* ================= PAGE 2 ================= */
 if ($('#p2-presta'))
   $('#p2-presta').innerHTML = JOURS.map(j => `<label>${esc(dayLabel(j))}<input type="number" id="prest-${j}" min="0" value="0"></label>`).join('');
 function applyPrestaValues(p2){
@@ -463,6 +475,18 @@ function applyPrestaValues(p2){
   });
   return true;
 }
+function renderP2(d){
+  if (d && d.rows){
+    $('#out-p2').innerHTML = tableHTML(orderedRows(d.rows, ['Projet', ...JOURS]));
+    $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
+      `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
+       <div class="val">${(d.metrics || {})[j] ?? 0}</div><div class="lbl">${esc(dayLabel(j))}</div></div>`).join('');
+    applyPrestaValues(d);
+  } else {
+    $('#out-p2').innerHTML = '';
+    $('#p2-metrics').innerHTML = '';
+  }
+}
 on('#btn-p2', 'click', async () => {
   busy($('#btn-p2'), true, 'Calcul…');
   try {
@@ -470,11 +494,7 @@ on('#btn-p2', 'click', async () => {
     msValues('f2-projet').forEach(v => p.append('projet', v));
     msValues('f2-statut').forEach(v => p.append('statut', v));
     JOURS.forEach(j => p.set('prest_' + j, intVal('prest-' + j)));
-    const d = await api('/api/page2?' + p);
-    $('#out-p2').innerHTML = tableHTML(orderedRows(d.rows, ['Projet', ...JOURS]));
-    $('#p2-metrics').innerHTML = JOURS.map((j, i) =>
-      `<div class="metric"><div class="ico ${['i-blue','i-yellow','i-teal','i-red','i-navy','i-green','i-grey'][i]}">${DAY_ICONS[i]}</div>
-       <div class="val">${d.metrics[j]}</div><div class="lbl">${esc(dayLabel(j))}</div></div>`).join('');
+    renderP2(await api('/api/page2?' + p));
     await saveBackup();
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p2'), false);
@@ -487,7 +507,16 @@ on('#btn-exp-p2', 'click', () => {
   window.open('/api/export_page2?' + p, '_blank');
 });
 
-/* ================= PAGE 3 ================= */
+function renderP3(d){
+  if (d && d.pivot && d.pivot.rows){
+    $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
+      tableHTML(orderedRows(d.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
+      `<details class="mt"><summary>👁️ Liste détaillée</summary>` +
+      tableHTML(orderedRows(d.detail.rows, ['Workday ID','Nom','Projet','Jour','Transport','Shift (Début)'])) + '</details>';
+  } else {
+    $('#out-p3').innerHTML = HINT_EMPTY;
+  }
+}
 on('#btn-p3', 'click', async () => {
   busy($('#btn-p3'), true, 'Calcul…');
   try {
@@ -495,11 +524,8 @@ on('#btn-p3', 'click', async () => {
     msValues('f3-transport').forEach(v => p.append('transport', v));
     msValues('f3-projet').forEach(v => p.append('projet', v));
     msValues('f3-statut').forEach(v => p.append('statut', v));
-    const d = await api('/api/page3?' + p);
-    $('#out-p3').innerHTML = '<h3 class="sub">📊 Nombre de personnes par Heure de Début</h3>' +
-      tableHTML(orderedRows(d.pivot.rows, ['Shift (Début)', ...JOURS, 'Total Semaine'])) +
-      `<details class="mt"><summary>👁️ Liste détaillée</summary>` +
-      tableHTML(orderedRows(d.detail.rows, ['Workday ID','Nom','Projet','Jour','Transport','Shift (Début)'])) + '</details>';
+    renderP3(await api('/api/page3?' + p));
+    await saveBackup();
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p3'), false);
 });
@@ -511,18 +537,24 @@ on('#btn-exp-p3', 'click', () => {
   window.open('/api/export_page3?' + p, '_blank');
 });
 
-/* ================= PAGE 4 ================= */
+function renderP4(d){
+  if (d && d.peaks && d.peaks.rows){
+    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet</h3>' +
+      tableHTML(orderedRows(d.peaks.rows, ['Projet', ...JOURS])) +
+      `<details class="mt"><summary>🕒 Détail par créneau</summary>` +
+      tableHTML(orderedRows(d.slots.rows, ['Créneau', ...JOURS, 'Total Jour'])) + '</details>';
+  } else {
+    $('#out-p4').innerHTML = HINT_EMPTY;
+  }
+}
 on('#btn-p4', 'click', async () => {
   busy($('#btn-p4'), true, 'Calcul…');
   try {
     const p = new URLSearchParams();
     msValues('f4-projet').forEach(v => p.append('projet', v));
     msValues('f4-statut').forEach(v => p.append('statut', v));
-    const d = await api('/api/page4?' + p);
-    $('#out-p4').innerHTML = '<h3 class="sub">📊 Pic de présence par projet</h3>' +
-      tableHTML(orderedRows(d.peaks.rows, ['Projet', ...JOURS])) +
-      `<details class="mt"><summary>🕒 Détail par créneau</summary>` +
-      tableHTML(orderedRows(d.slots.rows, ['Créneau', ...JOURS, 'Total Jour'])) + '</details>';
+    renderP4(await api('/api/page4?' + p));
+    await saveBackup();
   } catch(e){ toast(esc(e.message), 'err'); }
   busy($('#btn-p4'), false);
 });
@@ -533,7 +565,6 @@ on('#btn-exp-p4', 'click', () => {
   window.open('/api/export_page4?' + p, '_blank');
 });
 
-/* ================= PAGE 5 : Confrontation (avec Consommé) ================= */
 let p5Rows = null;
 function confTable(rows){
   if (!rows || !rows.length) return '<div class="empty">Aucune donnée.</div>';
@@ -575,7 +606,6 @@ on('#btn-p5', 'click', async () => {
 on('#f5-search', 'input', debounce(renderP5, 250));
 on('#btn-exp-p5', 'click', async () => { try { await downloadPost('/api/export_conf', 'confrontation.xlsx', {}); } catch(e){ toast(esc(e.message),'err'); } });
 
-/* ================= PAGE 6 : Commandes par menu ================= */
 const tauxByDay = Object.fromEntries(JOURS.map(j => [j, parseFloat($('#inp-taux') ? $('#inp-taux').value : 0) || 0]));
 on('#inp-taux', 'input', e => {
   JOURS.forEach(j => tauxByDay[j] = parseFloat(e.target.value) || 0);
@@ -789,7 +819,6 @@ tr.sanschoix td{font-weight:700}
 @page{margin:12mm}</style></head><body>${h}</body></html>`);
 });
 
-/* ================= PAGE 7 : Constats (avec filtre par type) ================= */
 let p7Rows = null;
 function renderP7(){
   if (p7Rows === null) return;
@@ -835,7 +864,6 @@ on('#btn-matr', 'click', async () => {
   busy($('#btn-matr'), false);
 });
 
-/* ================= PAGE 8 : Synthèse (filtres Excel + sous-totaux + resize) ================= */
 const SYN_COLS = ['Date','Semaine','Planifié total','À commander','Commande finale','Consommé',
                   'Non consommé','À facturer','QS (%)','QS conso vs commandé final (%)',
                   'MONTANT DA MGA HT','Nombre de plat ajusté','Pourcentage plat ajusté (%)'];
@@ -989,8 +1017,6 @@ function enableSynResize(table){
     th.appendChild(handle);
   });
 }
-
-/* Mise en forme conditionnelle QS : rouge <98 <orange <99 <verte <101 <orange <102 <rouge */
 function qsClass(v){
   const n = Number(v);
   if (!Number.isFinite(n)) return '';
@@ -1000,7 +1026,6 @@ function qsClass(v){
   if (n <= 102) return 'qs-orange';
   return 'qs-red';
 }
-
 function renderSynthese(d){
   lastSynData = d;
   if ($('#inp-month') && !$('#inp-month').value) $('#inp-month').value = d.month || '';
@@ -1078,15 +1103,14 @@ function renderSynthese(d){
       }));
   }
 }
-
 async function calcP8(){
   if (ROLE === 'viewer'){ toast("Action réservée à l'administrateur", 'warn'); return; }
   const b = $('#btn-p8');
   busy(b, true, 'Génération…');
   if (b) b.classList.remove('pending');
   try {
-    const d = await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())});
-    renderSynthese(d); await saveBackup();
+    renderSynthese(await api('/api/synthese', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(synthBody())}));
+    await saveBackup();
   } catch(e){ toast(esc(e.message), 'err'); }
   busy(b, false);
 }
@@ -1122,12 +1146,8 @@ tr.subtotal td{font-weight:700;background:#fdf3d7!important}
 @page{margin:12mm}</style></head><body>${h}</body></html>`);
 });
 
-/* ================= PAGE 9 : DASHBOARD (fusionné, ex-dashboard.js) ================= */
 const DB = { charts: {}, last: null };
 const fmtInt = v => new Intl.NumberFormat('fr-FR', {maximumFractionDigits: 0}).format(Number(v) || 0);
-
-console.log('[Dashboard] Chart.js:', !!window.Chart, '| DataLabels:', !!window.ChartDataLabels);
-
 function fmtCompact(v){
   const n = Number(v) || 0, abs = Math.abs(n);
   if (abs >= 1e6) return (n / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace('.', ',') + ' M';
@@ -1144,17 +1164,13 @@ function dbQsColor(v){
   return '#c0392b';
 }
 function dbDestroy(){ Object.values(DB.charts).forEach(c => { try { c.destroy(); } catch(e){} }); DB.charts = {}; }
-
-/* Enregistrement global du plugin étiquettes (une seule fois) */
 if (window.Chart && window.ChartDataLabels){
-  try { Chart.register(ChartDataLabels); } catch(e){ console.warn('[Dashboard] datalabels:', e.message); }
+  try { Chart.register(ChartDataLabels); } catch(e){}
 }
-
 function dbMakeChart(id, label, labels, data, colors, yOpts, labelFmt){
   try {
     const cv = document.getElementById(id);
-    if (!cv){ console.error('[Dashboard] canvas introuvable : #' + id); return; }
-    if (!window.Chart){ console.error('[Dashboard] Chart.js absent'); return; }
+    if (!cv || !window.Chart) return;
     if (DB.charts[id]){ try { DB.charts[id].destroy(); } catch(e){} }
     DB.charts[id] = new Chart(cv.getContext('2d'), {
       type: 'bar',
@@ -1178,11 +1194,7 @@ function dbMakeChart(id, label, labels, data, colors, yOpts, labelFmt){
         }
       }
     });
-    console.log('[Dashboard] graphique créé : #' + id);
-  } catch(e){
-    console.error('[Dashboard] erreur graphique #' + id + ' :', e);
-    toast('Erreur graphique : ' + e.message, 'err');
-  }
+  } catch(e){ console.error('[Dashboard]', e); }
 }
 function refreshDbWeeks(weeks){
   const sel = $('#db-week'), cur = sel.value;
@@ -1192,10 +1204,7 @@ function refreshDbWeeks(weeks){
 function renderDashboard(d){
   const kpis = document.getElementById('db-kpis');
   const out = document.getElementById('out-db');
-  if (!kpis || !out){
-    toast('⚠️ Section Dashboard absente de index.html (ids db-kpis / out-db)', 'err');
-    return;
-  }
+  if (!kpis || !out) return;
   const k = d.kpis || {};
   const qsTxt = (k.qs === null || k.qs === undefined) ? '—' : String(k.qs).replace('.', ',');
   kpis.innerHTML =
@@ -1206,7 +1215,6 @@ function renderDashboard(d){
     `<div class="metric"><div class="ico i-navy">📅</div><div class="val">${k.nb_jours || 0}</div><div class="lbl">Jours de données</div></div>`;
   $('#db-count').textContent =
     `${k.nb_jours || 0} jour(s) · Semaines : ${(d.weeks_available || []).join(', ') || '—'} · Mois : ${(d.months_available || []).join(', ') || '—'}`;
-
   const rows = d.rows || [];
   if (!rows.length){
     dbDestroy();
@@ -1217,10 +1225,8 @@ function renderDashboard(d){
   const qsData = rows.map(r => (r['QS (%)'] === null || r['QS (%)'] === undefined) ? null : Number(r['QS (%)']));
   const ncData = rows.map(r => Number(r['Non consommé'] || 0));
   const mtData = rows.map(r => Number(r['MONTANT DA MGA HT'] || 0));
-
   let h = '';
-  if (!window.Chart) h += '<div class="msg err">❌ Chart.js n\'est pas chargé (vérifiez le bloc &lt;script&gt; ou votre connexion réseau).</div>';
-  else if (!window.ChartDataLabels) h += '<div class="msg warn">⚠️ Plugin étiquettes non chargé — les graphiques s\'afficheront sans étiquettes.</div>';
+  if (!window.Chart) h += '<div class="msg err">❌ Chart.js non chargé (connexion internet requise).</div>';
   h += '<div class="chart-box"><h3 class="sub">🎯 Qualité de service — QS (%)</h3><div class="chart-wrap"><canvas id="db-c-qs"></canvas></div></div>';
   h += '<div class="chart-box"><h3 class="sub">🗑️ Nombre de repas non consommés</h3><div class="chart-wrap"><canvas id="db-c-nc"></canvas></div></div>';
   h += '<div class="chart-box"><h3 class="sub">💰 MONTANT DA MGA HT</h3><div class="chart-wrap"><canvas id="db-c-mt"></canvas></div></div>';
@@ -1229,7 +1235,6 @@ function renderDashboard(d){
     'QS (%)': r['QS (%)'], 'MONTANT DA MGA HT': r['MONTANT DA MGA HT']}));
   h += `<details class="mt"><summary>📋 Données des graphiques</summary>${tableHTML(tblRows)}</details>`;
   out.innerHTML = h;
-
   if (window.Chart){
     dbMakeChart('db-c-qs', 'QS (%)', labels, qsData, qsData.map(dbQsColor),
       {beginAtZero: false, suggestedMin: 90, suggestedMax: 105},
@@ -1255,7 +1260,7 @@ async function loadDashboard(){
     renderDashboard(d);
   } catch(e){
     const out = document.getElementById('out-db');
-    if (out) out.innerHTML = `<div class="msg err">❌ ${esc(e.message)}<br><small>Vérifiez que le serveur a été redémarré après l'ajout des routes Dashboard dans main.py.</small></div>`;
+    if (out) out.innerHTML = `<div class="msg err">❌ ${esc(e.message)}</div>`;
     toast('Dashboard : ' + e.message, 'err');
   }
   busy($('#btn-db'), false);
@@ -1264,7 +1269,6 @@ on('#db-period', 'change', () => { $('#db-month').disabled = $('#db-period').val
 on('#db-month', 'change', loadDashboard);
 on('#db-week', 'change', loadDashboard);
 on('#btn-db', 'click', loadDashboard);
-on('.tab[data-tab="p9"]', 'click', loadDashboard);
 on('#btn-exp-db', 'click', () => {
   const period = $('#db-period').value;
   const params = new URLSearchParams({period});
@@ -1275,17 +1279,13 @@ on('#btn-exp-db', 'click', () => {
   window.open('/api/export_dashboard?' + params, '_blank');
 });
 
-/* ================= INITIALISATION ================= */
 (function init(){
-  /* Multi-selects des pages 1 à 4 */
   MULTI_IDS.forEach(initMultiSelect);
-  /* Mois par défaut du dashboard : mois courant */
   const m = $('#db-month');
   if (m && !m.value){
     const n = new Date();
     m.value = n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0');
   }
-  /* Rôle courant + éventuelle restauration locale */
   (async () => {
     try {
       const me = await api('/api/me', {silent:true});
@@ -1294,7 +1294,6 @@ on('#btn-exp-db', 'click', () => {
     } catch(e){ ROLE = null; }
     await restoreIfEmpty();
     await refreshState();
-    await loadP1();
-    await autoLoadAll();
+    await loadAllForWeek(false);
   })();
 })();
