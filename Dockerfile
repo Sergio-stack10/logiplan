@@ -2,12 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# 1. Installer les dépendances Python
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
-COPY static/ static/
+# 2. Copier le code de l'application
+COPY . .
 
-ENV PORT=7860
-EXPOSE 7860
+# 3. Port d'écoute (Koyeb utilise le port 8000 par défaut)
+ENV PORT=8000
+EXPOSE 8000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:7860", "--timeout", "180", "--workers", "1", "--threads", "8", "main:app"]
+# 4. Démarrage du serveur
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT} --timeout 120 main:app"]
